@@ -567,7 +567,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Получение upload_url для загрузки видео
 async def get_upload_url(user_token, group_id):
-    title = "Поддержите подпиской😎😎"
     ssl_context = ssl.create_default_context()
     ssl_context.check_hostname = False
     ssl_context.verify_mode = ssl.CERT_NONE
@@ -587,6 +586,7 @@ async def get_upload_url(user_token, group_id):
 
 # Публикация видео в группе
 async def post_video(user_token, group_id, video_id, owner_id):
+    description = "Поддержите подпиской😎😎"
     ssl_context = ssl.create_default_context()
     ssl_context.check_hostname = False
     ssl_context.verify_mode = ssl.CERT_NONE
