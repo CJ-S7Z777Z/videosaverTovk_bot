@@ -14,8 +14,7 @@ import ssl
 import vk_api
 import urllib.parse
 
-# Прокси-сервер (с аутентификацией)
-PROXY_SERVER = 'http://WxysV4ec8iKS:RNW78Fm5@pool.proxy.market:10325'
+
 
 # Главные администраторы (их ID прописаны в коде)
 ADMIN_CHAT_IDS = [1276928573] # Замените на реальные ID главных админов
@@ -516,7 +515,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     'socket_timeout': 600,
                     'geo_bypass': True,
                     'geo_bypass_country': 'DE',
-                    'proxy': PROXY_SERVER,
                 }
                 with yt_dlp.YoutubeDL(ydl_options) as ydl:
                     ydl.download([url])
@@ -566,13 +564,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 # Получение upload_url для загрузки видео
-async def get_upload_url(user_token, group_id):
+async def get_upload_url(user_token, group_id, ):
+    description = "Поддержите подпиской😎😎"
     ssl_context = ssl.create_default_context()
     ssl_context.check_hostname = False
     ssl_context.verify_mode = ssl.CERT_NONE
 
     async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
-        async with session.post(f'https://api.vk.com/method/video.save?access_token={user_token}&group_id={group_id}&v=5.131') as resp:
+        async with session.post(f'https://api.vk.com/method/video.save?access_token={user_token}&group_id={group_id}&description={description}&v=5.131') as resp:
             data = await resp.json()
             if 'response' in data:
                 if 'upload_url' in data['response']:
@@ -604,6 +603,7 @@ async def post_video(user_token, group_id, video_id, owner_id):
     except Exception as e:
         print(f"Error posting video to VK: {e}")
         return {'error': str(e)}
+
 
 # Обработка нажатий кнопок
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
