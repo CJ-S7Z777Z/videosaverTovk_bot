@@ -586,7 +586,7 @@ async def get_upload_url(user_token, group_id):
 
 # Публикация видео в группе
 async def post_video(user_token, group_id, video_id, owner_id):
-    name = "Поддержите подпиской😎😎"
+    title = "Поддержите подпиской😎😎"
     ssl_context = ssl.create_default_context()
     ssl_context.check_hostname = False
     ssl_context.verify_mode = ssl.CERT_NONE
