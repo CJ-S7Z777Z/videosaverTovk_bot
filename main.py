@@ -4,17 +4,35 @@ import requests
 import os
 import telegram
 import asyncio
-import re
-from telegram import (Update, InlineKeyboardButton, InlineKeyboardMarkup,
-   ReplyKeyboardMarkup, KeyboardButton)
-from telegram.ext import (ApplicationBuilder, CommandHandler, MessageHandler, 
-    filters, ContextTypes, ConversationHandler, CallbackQueryHandler)
-import aiohttp
 import ssl
 import vk_api
 import urllib.parse
+import boto3 # Добавлено для работы с Yandex Cloud
+import botocore.exceptions
+import logging
+from telegram import (
+  Update,
+  InlineKeyboardButton,
+  InlineKeyboardMarkup,
+  ReplyKeyboardMarkup,
+  KeyboardButton
+)
+from telegram.ext import (
+  ApplicationBuilder,
+  CommandHandler,
+  MessageHandler,
+  filters,
+  ContextTypes,
+  ConversationHandler,
+  CallbackQueryHandler
+)
+import aiohttp
 
-
+# Настройка логирования
+logging.basicConfig(
+  format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+  level=logging.INFO
+)
 
 # Главные администраторы (их ID прописаны в коде)
 ADMIN_CHAT_IDS = [1276928573, 332786197, 1786980999, 228845914] # Замените на реальные ID главных админов
@@ -30,99 +48,126 @@ WAITING_ADMIN_ID = 3
 WAITING_REMOVE_ADMIN_ID = 4
 WAITING_GROUP_REMOVE_ID = 5
 
+# Данные для подключения к Yandex Cloud
+AWS_ACCESS_KEY_ID = 'YCAJE4t3j8XcCLHEl79Vg0cFz' # Замените на ваш Access Key ID
+AWS_SECRET_ACCESS_KEY = 'YCOTRa_l6J4ANGdAbMSOtgy8lwEkYhKBqlHxPjs7' # Замените на ваш Secret Access Key
+
+# Имя бакета и ключ для файла базы данных
+BUCKET_NAME = 'sver' # Замените на имя вашего бакета
+DB_FILE_KEY = 'vk_groups.db' # Имя файла базы данных в бакете
+
+# Настройка клиента S3 для Yandex Cloud
+s3_client = boto3.client(
+  's3',
+  aws_access_key_id=AWS_ACCESS_KEY_ID,
+  aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+  endpoint_url='https://storage.yandexcloud.net'
+)
+
+# Функция для загрузки базы данных из бакета Yandex Cloud
+def download_db():
+  try:
+    s3_client.download_file(BUCKET_NAME, DB_FILE_KEY, 'vk_groups.db')
+  except botocore.exceptions.ClientError as e:
+    if e.response['Error']['Code'] == "404":
+      print("Файл базы данных не найден в бакете, будет создан новый.")
+    else:
+      print(f"Ошибка при загрузке базы данных: {e}")
+      raise
+
+# Функция для загрузки базы данных в бакет Yandex Cloud
+def upload_db():
+  try:
+    s3_client.upload_file('vk_groups.db', BUCKET_NAME, DB_FILE_KEY)
+  except Exception as e:
+    print(f"Ошибка при загрузке базы данных: {e}")
+# Менеджер контекста для операций с базой данных
+class DatabaseManager:
+    def __enter__(self):
+        download_db()
+        self.conn = sqlite3.connect('vk_groups.db')
+        return self.conn
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.conn.commit()
+        self.conn.close()
+        upload_db()
+
 # Создание базы данных
 def setup_database():
- conn = sqlite3.connect('vk_groups.db')
- c = conn.cursor()
- c.execute('''
- CREATE TABLE IF NOT EXISTS admins
- (chat_id INTEGER PRIMARY KEY, user_token TEXT)
- ''')
- c.execute('''
- CREATE TABLE IF NOT EXISTS groups
- (group_id TEXT, token TEXT, name TEXT, admin_chat_id INTEGER)
- ''')
- conn.commit()
- conn.close()
+    with DatabaseManager() as conn:
+        c = conn.cursor()
+        c.execute('''
+        CREATE TABLE IF NOT EXISTS admins
+        (chat_id INTEGER PRIMARY KEY, user_token TEXT)
+        ''')
+        c.execute('''
+        CREATE TABLE IF NOT EXISTS groups
+        (group_id TEXT, token TEXT, name TEXT, admin_chat_id INTEGER)
+        ''')
+        conn.commit()
 
-# Получение user_token администратора
+# Остальные функции работы с базой данных
 def get_admin_token(chat_id):
- conn = sqlite3.connect('vk_groups.db')
- c = conn.cursor()
- c.execute('SELECT user_token FROM admins WHERE chat_id=?', (chat_id,))
- result = c.fetchone()
- conn.close()
- if result:
-     return result[0]
- else:
-     return None
+    with DatabaseManager() as conn:
+        c = conn.cursor()
+        c.execute('SELECT user_token FROM admins WHERE chat_id=?', (chat_id,))
+        result = c.fetchone()
+    if result:
+        return result[0]
+    else:
+        return None
 
-# Обновление user_token администратора
 def update_admin_token(chat_id, user_token):
- conn = sqlite3.connect('vk_groups.db')
- c = conn.cursor()
- c.execute('INSERT OR REPLACE INTO admins (chat_id, user_token) VALUES (?, ?)', (chat_id, user_token))
- conn.commit()
- conn.close()
+    with DatabaseManager() as conn:
+        c = conn.cursor()
+        c.execute('INSERT OR REPLACE INTO admins (chat_id, user_token) VALUES (?, ?)', (chat_id, user_token))
+        conn.commit()
 
-# Проверка, является ли пользователь администратором
 def is_admin(chat_id):
- conn = sqlite3.connect('vk_groups.db')
- c = conn.cursor()
- c.execute('SELECT * FROM admins WHERE chat_id=?', (chat_id,))
- result = c.fetchone()
- conn.close()
- return result is not None
+    with DatabaseManager() as conn:
+        c = conn.cursor()
+        c.execute('SELECT * FROM admins WHERE chat_id=?', (chat_id,))
+        result = c.fetchone()
+    return result is not None
 
-# Добавление администратора в базу данных
 def add_admin_to_db(chat_id):
- conn = sqlite3.connect('vk_groups.db')
- c = conn.cursor()
- c.execute('INSERT OR IGNORE INTO admins (chat_id) VALUES (?)', (chat_id,))
- conn.commit()
- conn.close()
+    with DatabaseManager() as conn:
+        c = conn.cursor()
+        c.execute('INSERT OR IGNORE INTO admins (chat_id) VALUES (?)', (chat_id,))
+        conn.commit()
 
-# Удаление администратора из базы данных
 def remove_admin_from_db(chat_id):
-  conn = sqlite3.connect('vk_groups.db')
-  c = conn.cursor()
-  c.execute('DELETE FROM admins WHERE chat_id=?', (chat_id,))
-  conn.commit()
-  conn.close()
+    with DatabaseManager() as conn:
+        c = conn.cursor()
+        c.execute('DELETE FROM admins WHERE chat_id=?', (chat_id,))
+        conn.commit()
 
-# Получение списка администраторов
 def get_admins():
-    conn = sqlite3.connect('vk_groups.db')
-    c = conn.cursor()
-    c.execute('SELECT chat_id FROM admins')
-    admins = c.fetchall()
-    conn.close()
+    with DatabaseManager() as conn:
+        c = conn.cursor()
+        c.execute('SELECT chat_id FROM admins')
+        admins = c.fetchall()
     return admins
 
-# Добавление группы в базу данных
 def add_group_to_db(group_id, token, name, admin_chat_id):
-    conn = sqlite3.connect('vk_groups.db')
-    c = conn.cursor()
-    c.execute('INSERT INTO groups VALUES (?, ?, ?, ?)', (group_id, token, name, admin_chat_id))
-    conn.commit()
-    conn.close()
+    with DatabaseManager() as conn:
+        c = conn.cursor()
+        c.execute('INSERT INTO groups VALUES (?, ?, ?, ?)', (group_id, token, name, admin_chat_id))
+        conn.commit()
 
-# Получение списка групп для администратора
 def get_groups(admin_chat_id):
-    conn = sqlite3.connect('vk_groups.db')
-    c = conn.cursor()
-    c.execute('SELECT * FROM groups WHERE admin_chat_id=?', (admin_chat_id,))
-    groups = c.fetchall()
-    conn.close()
+    with DatabaseManager() as conn:
+        c = conn.cursor()
+        c.execute('SELECT * FROM groups WHERE admin_chat_id=?', (admin_chat_id,))
+        groups = c.fetchall()
     return groups
 
-# Удаление группы из базы данных
 def remove_group_from_db(group_id, admin_chat_id):
-    conn = sqlite3.connect('vk_groups.db')
-    c = conn.cursor()
-    c.execute('DELETE FROM groups WHERE group_id=? AND admin_chat_id=?', (group_id, admin_chat_id))
-    conn.commit()
-    conn.close()
+    with DatabaseManager() as conn:
+        c = conn.cursor()
+        c.execute('DELETE FROM groups WHERE group_id=? AND admin_chat_id=?', (group_id, admin_chat_id))
+        conn.commit()
 
 # Функция для повторных попыток отправки сообщения
 async def send_message_with_retry(update, text, reply_markup=None, max_retries=3):
@@ -144,7 +189,7 @@ def get_vk_auth_url():
 
 # Извлечение access_token из ссылки
 def extract_access_token_from_url(url):
-    parsed = urllib.parse.urlparse(url)
+    parsed =urllib.parse.urlparse(url)
     fragment_params = urllib.parse.parse_qs(parsed.fragment)
     return fragment_params.get('access_token', [None])[0]
 
@@ -175,7 +220,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 keyboard.append([KeyboardButton('Администраторы')])
             reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
             await send_message_with_retry(update,
-                'Привет! Я помогу скачивать видео из TikTok, Youtube,VK клипы и публиковать видео в группы ВКонтакте.',
+                'Привет! Я помогу скачивать видео из TikTok, YouTube, VK клипы и публиковать видео в группы ВКонтакте.',
                 reply_markup=reply_markup
             )
             return ConversationHandler.END
@@ -297,49 +342,49 @@ async def show_groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Команда 'Добавить администратора'
 async def add_admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-  chat_id = update.message.chat_id
-  if chat_id in ADMIN_CHAT_IDS:
-    reply_markup = ReplyKeyboardMarkup(
-      [[KeyboardButton('Отмена')]],
-      resize_keyboard=True,
-      one_time_keyboard=True
-    )
-    await send_message_with_retry(
-      update,
-      'Пожалуйста, отправьте ID пользователя, которого вы хотите добавить в качестве администратора:',
-      reply_markup=reply_markup
-    )
-    return WAITING_ADMIN_ID
-  else:
-    await send_message_with_retry(
-      update,
-      'Команда доступна только для главных администраторов.'
-    )
-    return ConversationHandler.END
+    chat_id = update.message.chat_id
+    if chat_id in ADMIN_CHAT_IDS:
+        reply_markup = ReplyKeyboardMarkup(
+            [[KeyboardButton('Отмена')]],
+            resize_keyboard=True,
+            one_time_keyboard=True
+        )
+        await send_message_with_retry(
+            update,
+            'Пожалуйста, отправьте ID пользователя, которого вы хотите добавить в качестве администратора:',
+            reply_markup=reply_markup
+        )
+        return WAITING_ADMIN_ID
+    else:
+        await send_message_with_retry(
+            update,
+            'Команда доступна только для главных администраторов.'
+        )
+        return ConversationHandler.END
 
 async def add_admin_id_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
-  text = update.message.text.strip()
-  try:
-    new_admin_chat_id = int(text)
-    if new_admin_chat_id not in ADMIN_CHAT_IDS and not is_admin(new_admin_chat_id):
-      add_admin_to_db(new_admin_chat_id)
-      await send_message_with_retry(
-        update,
-        f'✅ Пользователь с ID {new_admin_chat_id} добавлен в качестве администратора!'
-      )
-    else:
-      await send_message_with_retry(
-        update,
-        f'❌ Пользователь с ID {new_admin_chat_id} уже является администратором.'
-      )
-  except ValueError:
-    await send_message_with_retry(
-      update,
-      'Неверный формат ID пользователя. Введите число.'
-    )
-    return WAITING_ADMIN_ID
-  await start(update, context)
-  return ConversationHandler.END
+    text = update.message.text.strip()
+    try:
+        new_admin_chat_id = int(text)
+        if new_admin_chat_id not in ADMIN_CHAT_IDS and not is_admin(new_admin_chat_id):
+            add_admin_to_db(new_admin_chat_id)
+            await send_message_with_retry(
+                update,
+                f'✅ Пользователь с ID {new_admin_chat_id} добавлен в качестве администратора!'
+            )
+        else:
+            await send_message_with_retry(
+                update,
+                f'❌ Пользователь с ID {new_admin_chat_id} уже является администратором.'
+            )
+    except ValueError:
+        await send_message_with_retry(
+            update,
+            'Неверный формат ID пользователя. Введите число.'
+        )
+        return WAITING_ADMIN_ID
+    await start(update, context)
+    return ConversationHandler.END
 
 # Команда 'Удалить администратора'
 async def remove_admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -434,9 +479,9 @@ async def remove_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def group_remove_id_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     try:
-        group_index = int(text) -1
+        group_index = int(text) - 1
         groups = context.user_data.get('groups', [])
-        if group_index >=0 and group_index < len(groups):
+        if 0 <= group_index < len(groups):
             group_id = groups[group_index][0]
             remove_group_from_db(group_id, update.message.chat_id)
             await send_message_with_retry(
@@ -500,24 +545,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Проверяем, содержит ли сообщение ссылку на видео
         url = update.message.text.strip()
-        if 'tiktok.com' in url or 'youtube.com' in url or 'youtu.be' in url or 'vk.com' in url or 'instagram.com' in url:
+        if any(domain in url for domain in ['tiktok.com', 'youtube.com', 'youtu.be', 'vk.com', 'instagram.com']):
             # Отправляем сообщение "Идет загрузка..."
             loading_message = await send_message_with_retry(
                 update,
                 'Идет загрузка...'
             )
             try:
+                # Создаем директорию для администратора
+                admin_video_dir = f'videos/{chat_id}'
+                if not os.path.exists(admin_video_dir):
+                    os.makedirs(admin_video_dir)
+
                 # Загрузка видео
                 ydl_options = {
                     'format': 'best',
-                    'outtmpl': 'videos/downloaded_video.%(ext)s',
+                    'outtmpl': f'{admin_video_dir}/downloaded_video.%(ext)s',
                     'quiet': True,
                     'socket_timeout': 600,
                     'geo_bypass': True,
                     'geo_bypass_country': 'DE',
                 }
                 with yt_dlp.YoutubeDL(ydl_options) as ydl:
-                    ydl.download([url])
+                    result = ydl.extract_info(url, download=True)
+                    video_file = ydl.prepare_filename(result)
 
                 await asyncio.sleep(1)
                 await loading_message.delete()
@@ -543,9 +594,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
 
                 # Сохраняем видео и информацию о группах для обработки в button_callback
-                context.user_data['video_path'] = 'videos/downloaded_video.mp4'
+                context.user_data['video_path'] = video_file
                 context.user_data['groups'] = groups
                 context.user_data['user_token'] = user_token
+
+                # Устанавливаем таймер для удаления видео
+                DELETE_TIMEOUT = 90  # Время в секундах (например, 600 секунд = 10 минут)
+
+                async def delete_video_after_timeout(chat_id, video_path, timeout):
+                    try:
+                        await asyncio.sleep(timeout)
+                        if os.path.exists(video_path):
+                            os.remove(video_path)
+                            print(f"Видео файл для chat_id {chat_id} удален после тайм-аута.")
+                            # Удаляем папку администратора, если она пуста
+                            admin_video_dir = os.path.dirname(video_path)
+                            try:
+                                os.rmdir(admin_video_dir)
+                            except OSError:
+                                pass  # Папка не пуста
+                    except asyncio.CancelledError:
+                        # Задача была отменена, ничего не делаем
+                        pass
+
+                delete_task = asyncio.create_task(delete_video_after_timeout(chat_id, video_file, DELETE_TIMEOUT))
+                context.user_data['delete_task'] = delete_task
 
             except Exception as e:
                 await send_message_with_retry(
@@ -563,15 +636,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'Этот бот доступен только для администраторов.'
         )
 
-# Получение upload_url для загрузки видео
+# Функции для работы с VK API
 async def get_upload_url(user_token, group_id, ):
-    description = "Поддержите подпиской😎😎"
+
     ssl_context = ssl.create_default_context()
     ssl_context.check_hostname = False
     ssl_context.verify_mode = ssl.CERT_NONE
 
     async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
-        async with session.post(f'https://api.vk.com/method/video.save?access_token={user_token}&group_id={group_id}&description={description}&v=5.131') as resp:
+        async with session.post(f'https://api.vk.com/method/video.save?access_token={user_token}&group_id={group_id}&&v=5.131') as resp:
             data = await resp.json()
             if 'response' in data:
                 if 'upload_url' in data['response']:
@@ -583,16 +656,14 @@ async def get_upload_url(user_token, group_id, ):
             else:
                 return {'error': {'error_msg': 'Unknown error occurred'}}
 
-# Публикация видео в группе
 async def post_video(user_token, group_id, video_id, owner_id):
-    description = "Поддержите подпиской😎😎"
     ssl_context = ssl.create_default_context()
     ssl_context.check_hostname = False
     ssl_context.verify_mode = ssl.CERT_NONE
 
     try:
         async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
-            async with session.post(f'https://api.vk.com/method/wall.post?access_token={user_token}&owner_id={-group_id}&from_group=1&attachments=video{owner_id}_{video_id}&message={description}&v=5.131') as resp:
+            async with session.post(f'https://api.vk.com/method/wall.post?access_token={user_token}&owner_id={-group_id}&from_group=1&attachments=video{owner_id}_{video_id}&v=5.131') as resp:
                 data = await resp.json()
                 if 'response' in data:
                     return data['response']
@@ -601,9 +672,8 @@ async def post_video(user_token, group_id, video_id, owner_id):
                 else:
                     raise Exception("Unknown error occurred during VK post")
     except Exception as e:
-        print(f"Error posting video to VK: {e}")
+        print(f"Ошибка при публикации видео в VK: {e}")
         return {'error': str(e)}
-
 
 # Обработка нажатий кнопок
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -656,7 +726,20 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
 
                 # Удаляем видео из локальной папки
-                os.remove(video_path)
+                if os.path.exists(video_path):
+                    os.remove(video_path)
+                    # Удаляем папку администратора, если она пуста
+                    admin_video_dir = os.path.dirname(video_path)
+                    try:
+                        os.rmdir(admin_video_dir)
+                    except OSError:
+                        pass  # Папка не пуста
+
+                # Отменяем задачу удаления видео по таймеру
+                if 'delete_task' in context.user_data:
+                    delete_task = context.user_data['delete_task']
+                    delete_task.cancel()
+
             else:
                 await query.message.edit_text(
                     f'❌ Ошибка при загрузке видео: HTTP {upload_result.status_code} - {upload_result.text}'
@@ -674,7 +757,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"Error in button_callback: {e}")
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await start(update, context) # Вызов функции start
+    await start(update, context)  # Вызов функции start
     return ConversationHandler.END  # Завершение текущего разговора
 
 # Обработка текстовых сообщений (кнопок)
@@ -687,12 +770,14 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         await show_groups(update, context)
     elif text == 'Удалить группу':
         return await remove_group(update, context)
-    elif text == 'Добавить администратора':
+    elif text =='Добавить администратора':
         return await add_admin_start(update, context)
     elif text == 'Удалить администратора':
         return await remove_admin_start(update, context)
     elif text == 'Администраторы':
         await show_admins(update, context)
+    elif text == 'Отмена':
+        await cancel(update, context)
     else:
         await handle_message(update, context)  # Обрабатываем как возможную ссылку на видео
 
@@ -739,7 +824,8 @@ def main():
             ],
         },
         fallbacks=[
-            CommandHandler('start', cancel)
+            CommandHandler('start', cancel),
+            MessageHandler(filters.Regex('^Отмена$'), cancel)
         ],
     )
 
@@ -747,7 +833,7 @@ def main():
     application.add_handler(MessageHandler(filters.Regex('^(Мои группы)$'), show_groups))
     application.add_handler(MessageHandler(filters.Regex('^(Администраторы)$'), show_admins))
     application.add_handler(CallbackQueryHandler(button_callback))
-    application.add_handler(MessageHandler(filters.TEXT &~filters.COMMAND, handle_text_message))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
 
     # Запуск бота
     application.run_polling()
