@@ -1,6 +1,6 @@
 
 import sqlite3
-import yt_dlp
+import youtube_dl  # Заменено с yt_dlp на youtube_dl
 import requests
 import os
 import telegram
@@ -31,20 +31,8 @@ import aiohttp
 
 # Настройка логирования
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.DEBUG,  # Установлен уровень DEBUG для подробного логирования
-    handlers=[
-        logging.FileHandler("download.log"),  # Логи будут записываться в файл download.log
-        logging.StreamHandler()  # Также выводятся в консоль
-    ]
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
-logger = logging.getLogger(__name__)
-
-# Создаём отдельный логгер для yt_dlp
-ydl_logger = logging.getLogger('yt_dlp')
-
-# Логируем версию yt_dlp
-logger.info(f"yt_dlp version: {yt_dlp.__version__}")
 
 # Главные администраторы (их ID прописаны в коде)
 ADMIN_CHAT_IDS = [1276928573, 332786197, 1786980999, 228845914]  # Замените на реальные ID главных админов
@@ -84,9 +72,9 @@ def download_db():
         s3_client.download_file(BUCKET_NAME, DB_FILE_KEY, "vk_groups.db")
     except botocore.exceptions.ClientError as e:
         if e.response["Error"]["Code"] == "404":
-            logger.info("Файл базы данных не найден в бакете, будет создан новый.")
+            print("Файл базы данных не найден в бакете, будет создан новый.")
         else:
-            logger.error(f"Ошибка при загрузке базы данных: {e}")
+            print(f"Ошибка при загрузке базы данных: {e}")
             raise
 
 # Функция для загрузки базы данных в бакет Yandex Cloud
@@ -94,7 +82,7 @@ def upload_db():
     try:
         s3_client.upload_file("vk_groups.db", BUCKET_NAME, DB_FILE_KEY)
     except Exception as e:
-        logger.error(f"Ошибка при загрузке базы данных: {e}")
+        print(f"Ошибка при загрузке базы данных: {e}")
 
 # Менеджер контекста для операций с базой данных
 class DatabaseManager:
@@ -584,65 +572,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if not os.path.exists(admin_video_dir):
                     os.makedirs(admin_video_dir)
 
-                # Пытаемся скачать с форматом "best[ext=mp4][acodec!=none]+bestaudio[ext=m4a]/best[ext=mp4][acodec!=none]"
-                ydl_options_primary = {
-                    "format": "best[ext=mp4][acodec!=none]+bestaudio[ext=m4a]/best[ext=mp4][acodec!=none]",  # Изменено
-                    "merge_output_format": "mp4",        # Добавлено
+                # Загрузка видео
+                ydl_options = {
+                    "format": "best",
                     "outtmpl": f"{admin_video_dir}/downloaded_video.%(ext)s",
-                    "quiet": False,                       # Изменено для вывода логов
-                    "logger": ydl_logger,                 # Передаём логгер в yt_dlp
+                    "quiet": True,
                     "socket_timeout": 600,
                     "geo_bypass": True,
                     "geo_bypass_country": "DE",
                 }
-                video_file = None
-                try:
-                    with yt_dlp.YoutubeDL(ydl_options_primary) as ydl:
-                        result = ydl.extract_info(url, download=True)
-                        video_file = ydl.prepare_filename(result)
-                except yt_dlp.utils.DownloadError as e_primary:
-                    logger.warning(f"Первичная попытка скачивания не удалась: {e_primary}")
-                    # Попробуем скачать с форматом "best"
-                    ydl_options_fallback = {
-                        "format": "best[ext=mp4][acodec!=none]",  # Резервный формат
-                        "merge_output_format": "mp4",
-                        "outtmpl": f"{admin_video_dir}/downloaded_video.%(ext)s",
-                        "quiet": False,
-                        "logger": ydl_logger,
-                        "socket_timeout": 600,
-                        "geo_bypass": True,
-                        "geo_bypass_country": "DE",
-                    }
-                    try:
-                        with yt_dlp.YoutubeDL(ydl_options_fallback) as ydl:
-                            result = ydl.extract_info(url, download=True)
-                            video_file = ydl.prepare_filename(result)
-                    except yt_dlp.utils.DownloadError as e_fallback:
-                        logger.error(f"Вторичная попытка скачивания не удалась: {e_fallback}")
-                        # Попробуем извлечь доступные форматы
-                        try:
-                            with yt_dlp.YoutubeDL({'quiet': True, 'skip_download': True, 'logger': ydl_logger}) as ydl:
-                                info_dict = ydl.extract_info(url, download=False)
-                                formats = info_dict.get('formats', [])
-                                logger.debug(f"Доступные форматы для видео {url}:")
-                                for f in formats:
-                                    fmt = f"ID: {f.get('format_id')}, EXT: {f.get('ext')}, FPS: {f.get('fps')}, RES: {f.get('resolution')}"
-                                    logger.debug(fmt)
-                        except Exception as e_info:
-                            logger.error(f"Не удалось извлечь информацию о форматах: {e_info}")
-
-                        await send_message_with_retry(
-                            update, f"❌ Ошибка при скачивании видео: {str(e_fallback)}"
-                        )
-                        await loading_message.delete()
-                        return
-                except Exception as e:
-                    logger.error(f"Неизвестная ошибка при скачивании видео: {e}")
-                    await send_message_with_retry(
-                        update, f"❌ Неизвестная ошибка при скачивании видео: {str(e)}"
-                    )
-                    await loading_message.delete()
-                    return
+                with youtube_dl.YoutubeDL(ydl_options) as ydl:  # Заменено yt_dlp на youtube_dl
+                    result = ydl.extract_info(url, download=True)
+                    video_file = ydl.prepare_filename(result)
 
                 await asyncio.sleep(1)
                 await loading_message.delete()
@@ -675,14 +616,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.user_data["user_token"] = user_token
 
                 # Устанавливаем таймер для удаления видео
-                DELETE_TIMEOUT = 90  # Время в секундах
+                DELETE_TIMEOUT = 90  # Время в секундах (например, 600 секунд = 10 минут)
 
                 async def delete_video_after_timeout(chat_id, video_path, timeout):
                     try:
                         await asyncio.sleep(timeout)
                         if os.path.exists(video_path):
                             os.remove(video_path)
-                            logger.info(
+                            print(
                                 f"Видео файл для chat_id {chat_id} удален после тайм-аута."
                             )
                             # Удаляем папку администратора, если она пуста
@@ -692,6 +633,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             except OSError:
                                 pass  # Папка не пуста
                     except asyncio.CancelledError:
+                        # Задача была отменена, ничего не делаем
                         pass
 
                 delete_task = asyncio.create_task(
@@ -700,22 +642,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.user_data["delete_task"] = delete_task
 
             except Exception as e:
-                logger.error(f"Неизвестная ошибка при обработке сообщения: {e}")
                 await send_message_with_retry(
-                    update, f"❌ Неизвестная ошибка: {str(e)}"
+                    update, f"Ошибка при скачивании видео: {str(e)}"
                 )
-                await loading_message.delete()
         else:
-            keyboard = [
-                [InlineKeyboardButton(tariff["name"], callback_data=f"tariff_{i}")]
-                for i, tariff in enumerate(tariffs)
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
             await send_message_with_retry(
                 update,
-                "Для доступа к боту необходимо купить тариф.",
-                reply_markup=reply_markup,
+                "Пожалуйста, отправьте ссылку на видео из TikTok, YouTube, VK или Instagram.",
             )
+    else:
+        keyboard = [
+            [InlineKeyboardButton(tariff["name"], callback_data=f"tariff_{i}")]
+            for i, tariff in enumerate(tariffs)
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await send_message_with_retry(
+            update,
+            "Для доступа к боту необходимо купить тариф.",
+            reply_markup=reply_markup,
+        )
 
 # Функции для работы с VK API
 async def get_upload_url(user_token, group_id):
@@ -728,7 +673,7 @@ async def get_upload_url(user_token, group_id):
         connector=aiohttp.TCPConnector(ssl=ssl_context)
     ) as session:
         async with session.post(
-            f"https://api.vk.com/method/video.save?access_token={user_token}&group_id={group_id}&v=5.131"
+            f"https://api.vk.com/method/video.save?access_token={user_token}&group_id={group_id}&&v=5.131"
         ) as resp:
             data = await resp.json()
             if "response" in data:
@@ -761,7 +706,7 @@ async def post_video(user_token, group_id, video_id, owner_id):
                 else:
                     raise Exception("Unknown error occurred during VK post")
     except Exception as e:
-        logger.error(f"Ошибка при публикации видео в VK: {e}")
+        print(f"Ошибка при публикации видео в VK: {e}")
         return {"error": str(e)}
 
 # Обработка нажатий кнопок
@@ -852,7 +797,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif data.startswith("tariff_"):
             # Обработка выбора тарифа
-            tariff_index = int(data[len("tariff_"):])
+            tariff_index = int(data[len("tariff_") :])
             tariff = tariffs[tariff_index]
             # Показываем детали тарифа и кнопки 'Оплатить' и 'Назад'
             message = (
@@ -888,11 +833,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
     except telegram.error.BadRequest as e:
-        logger.error(f"Error in button_callback: {e}")
+        print(f"Error in button_callback: {e}")
     except KeyError as e:
-        logger.error(f"Error in button_callback: '{e}'")
+        print(f"Error in button_callback: '{e}'")
     except Exception as e:
-        logger.error(f"Error in button_callback: {e}")
+        print(f"Error in button_callback: {e}")
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await start(update, context)  # Вызов функции start
@@ -926,9 +871,9 @@ def main():
     # Настройка бота
     application = (
         ApplicationBuilder()
-        .token("YOUR_TELEGRAM_BOT_TOKEN")  # Замените на токен вашего бота
+        .token("7846138041:AAEu94LKLIr2D16xTGwN0emEczOHub2CP6I")
         .build()
-    )
+    )  # Замените на токен вашего бота
 
     # Добавление обработчиков
     conv_handler = ConversationHandler(
