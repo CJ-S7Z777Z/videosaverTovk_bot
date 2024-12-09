@@ -81,9 +81,9 @@ def download_db():
         s3_client.download_file(BUCKET_NAME, DB_FILE_KEY, "vk_groups.db")
     except botocore.exceptions.ClientError as e:
         if e.response["Error"]["Code"] == "404":
-            print("Файл базы данных не найден в бакете, будет создан новый.")
+            logger.info("Файл базы данных не найден в бакете, будет создан новый.")
         else:
-            print(f"Ошибка при загрузке базы данных: {e}")
+            logger.error(f"Ошибка при загрузке базы данных: {e}")
             raise
 
 # Функция для загрузки базы данных в бакет Yandex Cloud
@@ -91,7 +91,7 @@ def upload_db():
     try:
         s3_client.upload_file("vk_groups.db", BUCKET_NAME, DB_FILE_KEY)
     except Exception as e:
-        print(f"Ошибка при загрузке базы данных: {e}")
+        logger.error(f"Ошибка при загрузке базы данных: {e}")
 
 # Менеджер контекста для операций с базой данных
 class DatabaseManager:
@@ -581,10 +581,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if not os.path.exists(admin_video_dir):
                     os.makedirs(admin_video_dir)
 
-                # Загрузка видео
-                ydl_options = {
-                    "format": "bestvideo+bestaudio/best",  # Изменено
-                    "merge_output_format": "mp4",        # Добавлено
+                # Пытаемся скачать с форматом "bestvideo+bestaudio/best"
+                ydl_options_primary = {
+                    "format": "bestvideo+bestaudio/best",
+                    "merge_output_format": "mp4",
                     "outtmpl": f"{admin_video_dir}/downloaded_video.%(ext)s",
                     "quiet": False,                       # Изменено для вывода логов
                     "logger": ydl_logger,                 # Передаём логгер в yt_dlp
@@ -592,9 +592,54 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "geo_bypass": True,
                     "geo_bypass_country": "DE",
                 }
-                with yt_dlp.YoutubeDL(ydl_options) as ydl:
-                    result = ydl.extract_info(url, download=True)
-                    video_file = ydl.prepare_filename(result)
+                video_file = None
+                try:
+                    with yt_dlp.YoutubeDL(ydl_options_primary) as ydl:
+                        result = ydl.extract_info(url, download=True)
+                        video_file = ydl.prepare_filename(result)
+                except yt_dlp.utils.DownloadError as e_primary:
+                    logger.warning(f"Первичная попытка скачивания не удалась: {e_primary}")
+                    # Попробуем скачать с форматом "best"
+                    ydl_options_fallback = {
+                        "format": "best",
+                        "merge_output_format": "mp4",
+                        "outtmpl": f"{admin_video_dir}/downloaded_video.%(ext)s",
+                        "quiet": False,                       # Изменено для вывода логов
+                        "logger": ydl_logger,                 # Передаём логгер в yt_dlp
+                        "socket_timeout": 600,
+                        "geo_bypass": True,
+                        "geo_bypass_country": "DE",
+                    }
+                    try:
+                        with yt_dlp.YoutubeDL(ydl_options_fallback) as ydl:
+                            result = ydl.extract_info(url, download=True)
+                            video_file = ydl.prepare_filename(result)
+                    except yt_dlp.utils.DownloadError as e_fallback:
+                        logger.error(f"Вторичная попытка скачивания не удалась: {e_fallback}")
+                        # Попробуем извлечь доступные форматы
+                        try:
+                            with yt_dlp.YoutubeDL({'quiet': True, 'skip_download': True, 'logger': ydl_logger}) as ydl:
+                                info_dict = ydl.extract_info(url, download=False)
+                                formats = info_dict.get('formats', [])
+                                logger.debug(f"Доступные форматы для видео {url}:")
+                                for f in formats:
+                                    fmt = f"ID: {f.get('format_id')}, EXT: {f.get('ext')}, FPS: {f.get('fps')}, RES: {f.get('resolution')}"
+                                    logger.debug(fmt)
+                        except Exception as e_info:
+                            logger.error(f"Не удалось извлечь информацию о форматах: {e_info}")
+
+                        await send_message_with_retry(
+                            update, f"❌ Ошибка при скачивании видео: {str(e_fallback)}"
+                        )
+                        await loading_message.delete()
+                        return
+                except Exception as e:
+                    logger.error(f"Неизвестная ошибка при скачивании видео: {e}")
+                    await send_message_with_retry(
+                        update, f"❌ Неизвестная ошибка при скачивании видео: {str(e)}"
+                    )
+                    await loading_message.delete()
+                    return
 
                 await asyncio.sleep(1)
                 await loading_message.delete()
@@ -652,30 +697,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 context.user_data["delete_task"] = delete_task
 
-            except yt_dlp.utils.DownloadError as e:
-                await send_message_with_retry(
-                    update, f"Ошибка при скачивании видео: {str(e)}"
-                )
             except Exception as e:
+                logger.error(f"Неизвестная ошибка при обработке сообщения: {e}")
                 await send_message_with_retry(
-                    update, f"Неизвестная ошибка: {str(e)}"
+                    update, f"❌ Неизвестная ошибка: {str(e)}"
                 )
+                await loading_message.delete()
         else:
+            keyboard = [
+                [InlineKeyboardButton(tariff["name"], callback_data=f"tariff_{i}")]
+                for i, tariff in enumerate(tariffs)
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
             await send_message_with_retry(
                 update,
-                "Пожалуйста, отправьте ссылку на видео из TikTok, YouTube, VK или Instagram.",
+                "Для доступа к боту необходимо купить тариф.",
+                reply_markup=reply_markup,
             )
-    else:
-        keyboard = [
-            [InlineKeyboardButton(tariff["name"], callback_data=f"tariff_{i}")]
-            for i, tariff in enumerate(tariffs)
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await send_message_with_retry(
-            update,
-            "Для доступа к боту необходимо купить тариф.",
-            reply_markup=reply_markup,
-        )
 
 # Функции для работы с VK API
 async def get_upload_url(user_token, group_id):
@@ -688,7 +726,7 @@ async def get_upload_url(user_token, group_id):
         connector=aiohttp.TCPConnector(ssl=ssl_context)
     ) as session:
         async with session.post(
-            f"https://api.vk.com/method/video.save?access_token={user_token}&group_id={group_id}&&v=5.131"
+            f"https://api.vk.com/method/video.save?access_token={user_token}&group_id={group_id}&v=5.131"
         ) as resp:
             data = await resp.json()
             if "response" in data:
@@ -812,7 +850,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif data.startswith("tariff_"):
             # Обработка выбора тарифа
-            tariff_index = int(data[len("tariff_") :])
+            tariff_index = int(data[len("tariff_"):])
             tariff = tariffs[tariff_index]
             # Показываем детали тарифа и кнопки 'Оплатить' и 'Назад'
             message = (
@@ -886,7 +924,7 @@ def main():
     # Настройка бота
     application = (
         ApplicationBuilder()
-        .token("7846138041:AAEu94LKLIr2D16xTGwN0emEczOHub2CP6I")
+        .token("YOUR_TELEGRAM_BOT_TOKEN")
         .build()
     )  # Замените на токен вашего бота
 
