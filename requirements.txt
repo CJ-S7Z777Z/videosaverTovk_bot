@@ -1,4 +1,4 @@
-yt_dlp~=2024.11.4
+yt_dlp~=2024.12.06
 requests~=2.32.3
 aiohttp~=3.10.10
 vk_api~=11.9.9
