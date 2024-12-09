@@ -43,6 +43,9 @@ logger = logging.getLogger(__name__)
 # Создаём отдельный логгер для yt_dlp
 ydl_logger = logging.getLogger('yt_dlp')
 
+# Логируем версию yt_dlp
+logger.info(f"yt_dlp version: {yt_dlp.__version__}")
+
 # Главные администраторы (их ID прописаны в коде)
 ADMIN_CHAT_IDS = [1276928573, 332786197, 1786980999, 228845914]  # Замените на реальные ID главных админов
 
@@ -581,10 +584,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if not os.path.exists(admin_video_dir):
                     os.makedirs(admin_video_dir)
 
-                # Пытаемся скачать с форматом "bestvideo+bestaudio/best"
+                # Пытаемся скачать с форматом "best[ext=mp4][acodec!=none]+bestaudio[ext=m4a]/best[ext=mp4][acodec!=none]"
                 ydl_options_primary = {
-                    "format": "bestvideo+bestaudio/best",
-                    "merge_output_format": "mp4",
+                    "format": "best[ext=mp4][acodec!=none]+bestaudio[ext=m4a]/best[ext=mp4][acodec!=none]",  # Изменено
+                    "merge_output_format": "mp4",        # Добавлено
                     "outtmpl": f"{admin_video_dir}/downloaded_video.%(ext)s",
                     "quiet": False,                       # Изменено для вывода логов
                     "logger": ydl_logger,                 # Передаём логгер в yt_dlp
@@ -601,11 +604,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     logger.warning(f"Первичная попытка скачивания не удалась: {e_primary}")
                     # Попробуем скачать с форматом "best"
                     ydl_options_fallback = {
-                        "format": "best",
+                        "format": "best[ext=mp4][acodec!=none]",  # Резервный формат
                         "merge_output_format": "mp4",
                         "outtmpl": f"{admin_video_dir}/downloaded_video.%(ext)s",
-                        "quiet": False,                       # Изменено для вывода логов
-                        "logger": ydl_logger,                 # Передаём логгер в yt_dlp
+                        "quiet": False,
+                        "logger": ydl_logger,
                         "socket_timeout": 600,
                         "geo_bypass": True,
                         "geo_bypass_country": "DE",
@@ -672,7 +675,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.user_data["user_token"] = user_token
 
                 # Устанавливаем таймер для удаления видео
-                DELETE_TIMEOUT = 90  # Время в секундах (например, 600 секунд = 10 минут)
+                DELETE_TIMEOUT = 90  # Время в секундах
 
                 async def delete_video_after_timeout(chat_id, video_path, timeout):
                     try:
@@ -689,7 +692,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             except OSError:
                                 pass  # Папка не пуста
                     except asyncio.CancelledError:
-                        # Задача была отменена, ничего не делаем
                         pass
 
                 delete_task = asyncio.create_task(
@@ -924,9 +926,9 @@ def main():
     # Настройка бота
     application = (
         ApplicationBuilder()
-        .token("YOUR_TELEGRAM_BOT_TOKEN")
+        .token("YOUR_TELEGRAM_BOT_TOKEN")  # Замените на токен вашего бота
         .build()
-    )  # Замените на токен вашего бота
+    )
 
     # Добавление обработчиков
     conv_handler = ConversationHandler(
