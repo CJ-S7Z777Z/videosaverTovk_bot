@@ -31,8 +31,17 @@ import aiohttp
 
 # Настройка логирования
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.DEBUG,  # Установлен уровень DEBUG для подробного логирования
+    handlers=[
+        logging.FileHandler("download.log"),  # Логи будут записываться в файл download.log
+        logging.StreamHandler()  # Также выводятся в консоль
+    ]
 )
+logger = logging.getLogger(__name__)
+
+# Создаём отдельный логгер для yt_dlp
+ydl_logger = logging.getLogger('yt_dlp')
 
 # Главные администраторы (их ID прописаны в коде)
 ADMIN_CHAT_IDS = [1276928573, 332786197, 1786980999, 228845914]  # Замените на реальные ID главных админов
@@ -574,9 +583,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 # Загрузка видео
                 ydl_options = {
-                    "format": "best",
+                    "format": "bestvideo+bestaudio/best",  # Изменено
+                    "merge_output_format": "mp4",        # Добавлено
                     "outtmpl": f"{admin_video_dir}/downloaded_video.%(ext)s",
-                    "quiet": True,
+                    "quiet": False,                       # Изменено для вывода логов
+                    "logger": ydl_logger,                 # Передаём логгер в yt_dlp
                     "socket_timeout": 600,
                     "geo_bypass": True,
                     "geo_bypass_country": "DE",
@@ -623,7 +634,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         await asyncio.sleep(timeout)
                         if os.path.exists(video_path):
                             os.remove(video_path)
-                            print(
+                            logger.info(
                                 f"Видео файл для chat_id {chat_id} удален после тайм-аута."
                             )
                             # Удаляем папку администратора, если она пуста
@@ -641,9 +652,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 context.user_data["delete_task"] = delete_task
 
-            except Exception as e:
+            except yt_dlp.utils.DownloadError as e:
                 await send_message_with_retry(
                     update, f"Ошибка при скачивании видео: {str(e)}"
+                )
+            except Exception as e:
+                await send_message_with_retry(
+                    update, f"Неизвестная ошибка: {str(e)}"
                 )
         else:
             await send_message_with_retry(
@@ -706,7 +721,7 @@ async def post_video(user_token, group_id, video_id, owner_id):
                 else:
                     raise Exception("Unknown error occurred during VK post")
     except Exception as e:
-        print(f"Ошибка при публикации видео в VK: {e}")
+        logger.error(f"Ошибка при публикации видео в VK: {e}")
         return {"error": str(e)}
 
 # Обработка нажатий кнопок
@@ -833,11 +848,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
     except telegram.error.BadRequest as e:
-        print(f"Error in button_callback: {e}")
+        logger.error(f"Error in button_callback: {e}")
     except KeyError as e:
-        print(f"Error in button_callback: '{e}'")
+        logger.error(f"Error in button_callback: '{e}'")
     except Exception as e:
-        print(f"Error in button_callback: {e}")
+        logger.error(f"Error in button_callback: {e}")
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await start(update, context)  # Вызов функции start
