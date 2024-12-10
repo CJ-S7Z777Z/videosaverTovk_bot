@@ -1,6 +1,6 @@
 
 import sqlite3
-import youtube_dl  # Заменено с yt_dlp на youtube_dl
+import yt_dlp
 import requests
 import os
 import telegram
@@ -581,7 +581,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "geo_bypass": True,
                     "geo_bypass_country": "DE",
                 }
-                with youtube_dl.YoutubeDL(ydl_options) as ydl:  # Заменено yt_dlp на youtube_dl
+                with yt_dlp.YoutubeDL(ydl_options) as ydl:
                     result = ydl.extract_info(url, download=True)
                     video_file = ydl.prepare_filename(result)
 
