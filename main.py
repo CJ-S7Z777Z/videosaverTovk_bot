@@ -38,7 +38,7 @@ logging.basicConfig(
 ADMIN_CHAT_IDS = [1276928573, 332786197, 1786980999, 228845914]  # Замените на реальные ID главных админов
 
 # VK App ID (замените на свой)
-VK_CLIENT_ID = "52616258"  # Укажите здесь ваш ID приложения VK
+VK_CLIENT_ID = "52875762"  # Укажите здесь ваш ID приложения VK
 
 # Состояния для ConversationHandler
 AUTHORIZATION = 0
