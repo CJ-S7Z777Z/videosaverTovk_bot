@@ -744,16 +744,23 @@ async def get_upload_url(user_token, group_id):
         async with session.post(
             f"https://api.vk.com/method/video.save?access_token={user_token}&group_id={group_id}&v=5.131"
         ) as resp:
-            data = await resp.json()
-            if "response" in data:
-                if "upload_url" in data["response"]:
-                    return data["response"]
-                else:
-                    return {"error": {"error_msg": "Upload URL not found in response"}}
-            elif "error" in data:
-                return {"error": data["error"]}
-            else:
-                return {"error": {"error_msg": "Unknown error occurred"}}
+            try:
+                data = await resp.json()
+                logger.info(f"Получен ответ от video.save: {data}")
+            except Exception as e:
+                logger.error(f"Ошибка при разборе JSON ответа video.save: {e}")
+                return {"error": {"error_msg": "Invalid JSON response from VK API"}}
+
+            if isinstance(data, dict):
+                if "response" in data:
+                    if "upload_url" in data["response"]:
+                        return data["response"]
+                    else:
+                        return {"error": {"error_msg": "Upload URL not found in response"}}
+                elif "error" in data:
+                    return {"error": data["error"]}
+            # Если ответ не соответствует ожидаемым форматам
+            return {"error": {"error_msg": "Unknown error occurred"}}
 
 async def post_video_as_clip(user_token, group_id, video_id, owner_id):
     """
@@ -778,13 +785,20 @@ async def post_video_as_clip(user_token, group_id, video_id, owner_id):
                 "https://api.vk.com/method/video.add",
                 params=params
             ) as resp:
-                data = await resp.json()
-                if "response" in data:
-                    return data["response"]
-                elif "error" in data:
-                    return {"error": data["error"]}
-                else:
-                    return {"error": {"error_msg": "Unknown error occurred"}}
+                try:
+                    data = await resp.json()
+                    logger.info(f"Получен ответ от video.add: {data}")
+                except Exception as e:
+                    logger.error(f"Ошибка при разборе JSON ответа video.add: {e}")
+                    return {"error": {"error_msg": "Invalid JSON response from VK API"}}
+
+                if isinstance(data, dict):
+                    if "response" in data:
+                        return data["response"]
+                    elif "error" in data:
+                        return {"error": data["error"]}
+        # В случае отсутствия правильного ответа
+        return {"error": {"error_msg": "Unknown error occurred"}}
     except Exception as e:
         logger.error(f"Ошибка при публикации клипа в VK: {e}")
         return {"error": str(e)}
@@ -825,6 +839,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # Получаем URL для загрузки видео
                 upload_info = await get_upload_url(user_token, group_id)
 
+                # Проверяем, что upload_info является словарём
+                if not isinstance(upload_info, dict):
+                    await query.message.edit_text(
+                        "❌ Неправильный формат ответа от VK API при получении upload_url."
+                    )
+                    return
+
                 if "error" in upload_info:
                     await query.message.edit_text(
                         f'❌ Ошибка при получении URL для загрузки видео: {upload_info["error"]["error_msg"]}'
@@ -852,7 +873,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     return
 
-                # Проверяем, что upload_data является словарем и содержит необходимые ключи
+                # Проверяем, что upload_data является словарём и содержит необходимые ключи
                 if not isinstance(upload_data, dict):
                     await query.message.edit_text(
                         f"❌ Ошибка при загрузке видео: ожидался JSON объект, получено {type(upload_data).__name__}."
@@ -870,6 +891,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 # Публикуем видео как клип
                 post_result = await post_video_as_clip(user_token, group_id, video_id, owner_id)
+
+                # Проверяем, что post_result является словарём
+                if not isinstance(post_result, dict):
+                    await query.message.edit_text(
+                        "❌ Неправильный формат ответа от VK API при публикации клипа."
+                    )
+                    return
 
                 if "error" in post_result:
                     await query.message.edit_text(
@@ -900,23 +928,26 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif data.startswith("tariff_"):
             # Обработка выбора тарифа
-            tariff_index = int(data[len("tariff_"):])
-            if 0 <= tariff_index < len(tariffs):
-                tariff = tariffs[tariff_index]
-                # Показываем детали тарифа и кнопки 'Оплатить' и 'Назад'
-                message = (
-                    f"Тариф: {tariff['name']}\nСтоимость: {tariff['cost']}\nКоличество видео: {tariff['videos']}"
-                )
-                keyboard = [
-                    [
-                        InlineKeyboardButton("Оплатить", callback_data="pay"),
-                        InlineKeyboardButton("Назад", callback_data="back_to_tariffs"),
+            try:
+                tariff_index = int(data[len("tariff_"):])
+                if 0 <= tariff_index < len(tariffs):
+                    tariff = tariffs[tariff_index]
+                    # Показываем детали тарифа и кнопки 'Оплатить' и 'Назад'
+                    message = (
+                        f"Тариф: {tariff['name']}\nСтоимость: {tariff['cost']}\nКоличество видео: {tariff['videos']}"
+                    )
+                    keyboard = [
+                        [
+                            InlineKeyboardButton("Оплатить", callback_data="pay"),
+                            InlineKeyboardButton("Назад", callback_data="back_to_tariffs"),
+                        ]
                     ]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await query.message.edit_text(message, reply_markup=reply_markup)
-            else:
-                await query.message.edit_text("❌ Выбран неверный тариф.")
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    await query.message.edit_text(message, reply_markup=reply_markup)
+                else:
+                    await query.message.edit_text("❌ Выбран неверный тариф.")
+            except ValueError:
+                await query.message.edit_text("❌ Некорректный формат выбора тарифа.")
 
         elif data == "back_to_tariffs":
             # Возвращаемся к списку тарифов
