@@ -779,6 +779,7 @@ async def post_video(user_token, group_id, video_id, owner_id):
         return {"error": str(e)}
 
 # Обработка нажатий кнопок
+
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         query = update.callback_query
@@ -823,15 +824,38 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
 
                 if upload_result.status_code == 200:
-                    upload_data = upload_result.json()
+                    try:
+                        upload_data = upload_result.json()
+                    except ValueError:
+                        await query.message.edit_text(
+                            "❌ Ошибка при загрузке видео: неверный формат ответа от сервера."
+                        )
+                        return
+
+                    # Проверяем, что upload_data является словарем и содержит необходимые ключи
+                    if not isinstance(upload_data, dict):
+                        await query.message.edit_text(
+                            f"❌ Ошибка при загрузке видео: ожидался JSON объект, получено {type(upload_data).__name__}."
+                        )
+                        return
+
+                    if "video_id" not in upload_data or "owner_id" not in upload_data:
+                        await query.message.edit_text(
+                            f"❌ Ошибка при загрузке видео: отсутствуют необходимые данные. Получен ответ: {upload_data}"
+                        )
+                        return
+
+                    video_id = upload_data["video_id"]
+                    owner_id = upload_data["owner_id"]
 
                     # Публикуем видео в группе
                     post_result = await post_video(
                         user_token,
                         group_id,
-                        upload_data["video_id"],
-                        upload_data["owner_id"],
+                        video_id,
+                        owner_id,
                     )
+
                     if "error" in post_result:
                         await query.message.edit_text(
                             f'❌ Ошибка при публикации в группе "{group[2]}": {post_result["error"]["error_msg"]}'
@@ -907,6 +931,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"Error in button_callback: '{e}'")
     except Exception as e:
         print(f"Error in button_callback: {e}")
+
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await start(update, context)  # Вызов функции start
