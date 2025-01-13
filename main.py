@@ -382,15 +382,17 @@ async def group_token_received(update: Update, context: ContextTypes.DEFAULT_TYP
 async def group_id_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     chat_id = update.effective_chat.id
-    group_id = f"-{text}"
+    group_id = text  # Теперь group_id хранится как положительное
     group_token = context.user_data["group_token"]
 
     try:
         vk_session = vk_api.VkApi(token=group_token)
         vk = vk_session.get_api()
-        group_info = vk.groups.getById(group_id=group_id[1:])[0]
+        group_info = vk.groups.getById(group_id=group_id)[0]  # group_id без минуса
 
-        add_group_to_db(group_id, group_token, group_info["name"], chat_id)
+        # Сохраняем group_id с минусом для обозначения сообщества
+        group_id_with_minus = f"-{group_id}"
+        add_group_to_db(group_id_with_minus, group_token, group_info["name"], chat_id)
 
         await send_message_with_retry(
             update, f'✅ Группа "{group_info["name"]}" успешно добавлена!'
@@ -682,14 +684,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.user_data["user_token"] = user_token
 
                 # Устанавливаем таймер для удаления видео
-                DELETE_TIMEOUT = 90  # Время в секундах (например, 600 секунд = 10 минут)
+                DELETE_TIMEOUT = 90  # Время в секундах (пример: 90 секунд)
 
                 async def delete_video_after_timeout(chat_id, video_path, timeout):
                     try:
                         await asyncio.sleep(timeout)
                         if os.path.exists(video_path):
                             os.remove(video_path)
-                            print(
+                            logging.info(
                                 f"Видео файл для chat_id {chat_id} удален после тайм-аута."
                             )
                             # Удаляем папку администратора, если она пуста
@@ -741,7 +743,7 @@ async def get_upload_url(user_token, group_id):
         connector=aiohttp.TCPConnector(ssl=ssl_context)
     ) as session:
         async with session.post(
-            f"https://api.vk.com/method/video.save?access_token={user_token}&group_id={group_id}&v=5.131"
+            f"https://api.vk.com/method/video.save?access_token={user_token}&group_id={abs(group_id)}&v=5.131"
         ) as resp:
             try:
                 data = await resp.json()
@@ -766,7 +768,7 @@ async def post_video(user_token, group_id, video_id, owner_id):
     Сохраняет видео в разделе "Видео" группы ВКонтакте без публикации на стене.
     
     :param user_token: Токен доступа пользователя или группы.
-    :param group_id: ID группы ВКонтакте.
+    :param group_id: ID группы ВКонтакте (отрицательный для сообщества).
     :param video_id: ID загруженного видео.
     :param owner_id: ID владельца видео.
     :return: Словарь с информацией о сохранённом видео или ошибкой.
@@ -785,7 +787,7 @@ async def post_video(user_token, group_id, video_id, owner_id):
                 "v": "5.131",
                 "video_id": video_id,
                 "owner_id": owner_id,
-                "target_id": -group_id  # Предполагаем, что group_id положительны
+                "target_id": group_id  # group_id уже содержит минус
             }
 
             async with session.post(
@@ -836,8 +838,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             video_path = context.user_data["video_path"]
             group_token = group[1]  # Токен группы
-            group_id_str = group[0]  # ID группы с минусом
-            group_id = int(group_id_str)  # Преобразуем в целое число, сохраняем минус
+            group_id_str = group[0]  # ID группы с минусом, например, "-12345"
+            group_id = int(group_id_str)  # Преобразуем в целое число, например, -12345
 
             try:
                 # Получаем URL для загрузки видео
