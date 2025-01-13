@@ -55,7 +55,7 @@ AWS_ACCESS_KEY_ID = "YCAJE4t3j8XcCLHEl79Vg0cFz"  # Замените на ваш 
 AWS_SECRET_ACCESS_KEY = "YCOTRa_l6J4ANGdAbMSOtgy8lwEkYhKBqlHxPjs7"  # Замените на ваш Secret Access Key
 
 # Имя бакета и ключ для файла базы данных
-BUCKET_NAME = "sver"  # Замените на имя вашего бакета
+BUCKET_NAME = "class-13"  # Замените на имя вашего бакета
 DB_FILE_KEY = "vk_groups.db"  # Имя файла базы данных в бакете
 
 # Настройка клиента S3 для Yandex Cloud
