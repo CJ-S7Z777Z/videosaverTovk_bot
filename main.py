@@ -50,8 +50,8 @@ SELECTING_TARIFF = 6
 TARIFF_DETAILS = 7
 
 # Переменные окружения для ограничений скачиваний
-REGULAR_DAILY_LIMIT = int(os.getenv("REGULAR_DAILY_LIMIT", 100))  # Значение по умолчанию
-ADMIN_DAILY_LIMIT = int(os.getenv("ADMIN_DAILY_LIMIT", 1000))    # Значение по умолчанию
+REGULAR_DAILY_LIMIT = int(os.getenv("REGULAR_DAILY_LIMIT"))
+ADMIN_DAILY_LIMIT = int(os.getenv("ADMIN_DAILY_LIMIT"))
 
 # Строка подключения к PostgreSQL
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -382,17 +382,15 @@ async def group_token_received(update: Update, context: ContextTypes.DEFAULT_TYP
 async def group_id_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     chat_id = update.effective_chat.id
-    group_id = text  # Теперь group_id хранится как положительное
+    group_id = f"-{text}"
     group_token = context.user_data["group_token"]
 
     try:
         vk_session = vk_api.VkApi(token=group_token)
         vk = vk_session.get_api()
-        group_info = vk.groups.getById(group_id=group_id)[0]  # group_id без минуса
+        group_info = vk.groups.getById(group_id=group_id[1:])[0]
 
-        # Сохраняем group_id с минусом для обозначения сообщества
-        group_id_with_minus = f"-{group_id}"
-        add_group_to_db(group_id_with_minus, group_token, group_info["name"], chat_id)
+        add_group_to_db(group_id, group_token, group_info["name"], chat_id)
 
         await send_message_with_retry(
             update, f'✅ Группа "{group_info["name"]}" успешно добавлена!'
@@ -674,7 +672,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # Отправляем сообщение с клавиатурой
                 await send_message_with_retry(
                     update,
-                    "Выберите группу для сохранения видео:",
+                    "Выберите группу для публикации:",
                     reply_markup=reply_markup,
                 )
 
@@ -684,14 +682,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.user_data["user_token"] = user_token
 
                 # Устанавливаем таймер для удаления видео
-                DELETE_TIMEOUT = 90  # Время в секундах (пример: 90 секунд)
+                DELETE_TIMEOUT = 90  # Время в секундах (например, 600 секунд = 10 минут)
 
                 async def delete_video_after_timeout(chat_id, video_path, timeout):
                     try:
                         await asyncio.sleep(timeout)
                         if os.path.exists(video_path):
                             os.remove(video_path)
-                            logging.info(
+                            print(
                                 f"Видео файл для chat_id {chat_id} удален после тайм-аута."
                             )
                             # Удаляем папку администратора, если она пуста
@@ -735,6 +733,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Функции для работы с VK API
 async def get_upload_url(user_token, group_id):
+
     ssl_context = ssl.create_default_context()
     ssl_context.check_hostname = False
     ssl_context.verify_mode = ssl.CERT_NONE
@@ -743,16 +742,9 @@ async def get_upload_url(user_token, group_id):
         connector=aiohttp.TCPConnector(ssl=ssl_context)
     ) as session:
         async with session.post(
-            f"https://api.vk.com/method/video.save?access_token={user_token}&group_id={abs(group_id)}&v=5.131"
+            f"https://api.vk.com/method/video.save?access_token={user_token}&group_id={group_id}&&v=5.131"
         ) as resp:
-            try:
-                data = await resp.json()
-            except aiohttp.ContentTypeError:
-                logging.error("Неверный формат ответа от VK API")
-                return {"error": {"error_msg": "Invalid response format from VK API"}}
-            
-            logging.info(f"Ответ от VK API: {data}")
-
+            data = await resp.json()
             if "response" in data:
                 if "upload_url" in data["response"]:
                     return data["response"]
@@ -764,15 +756,6 @@ async def get_upload_url(user_token, group_id):
                 return {"error": {"error_msg": "Unknown error occurred"}}
 
 async def post_video(user_token, group_id, video_id, owner_id):
-    """
-    Сохраняет видео в разделе "Видео" группы ВКонтакте без публикации на стене.
-    
-    :param user_token: Токен доступа пользователя или группы.
-    :param group_id: ID группы ВКонтакте (отрицательный для сообщества).
-    :param video_id: ID загруженного видео.
-    :param owner_id: ID владельца видео.
-    :return: Словарь с информацией о сохранённом видео или ошибкой.
-    """
     ssl_context = ssl.create_default_context()
     ssl_context.check_hostname = False
     ssl_context.verify_mode = ssl.CERT_NONE
@@ -781,35 +764,18 @@ async def post_video(user_token, group_id, video_id, owner_id):
         async with aiohttp.ClientSession(
             connector=aiohttp.TCPConnector(ssl=ssl_context)
         ) as session:
-            # Формируем параметры для video.add
-            params = {
-                "access_token": user_token,
-                "v": "5.131",
-                "video_id": video_id,
-                "owner_id": owner_id,
-                "target_id": group_id  # group_id уже содержит минус
-            }
-
             async with session.post(
-                "https://api.vk.com/method/video.add",
-                data=params
+                f"https://api.vk.com/method/wall.post?access_token={user_token}&owner_id={-group_id}&from_group=1&attachments=video{owner_id}_{video_id}&v=5.131"
             ) as resp:
-                try:
-                    data = await resp.json()
-                except aiohttp.ContentTypeError:
-                    logging.error("Неверный формат ответа от VK API в video.add")
-                    return {"error": {"error_msg": "Invalid response format from VK API"}}
-                
-                logging.info(f"Ответ от VK API video.add: {data}")
-
+                data = await resp.json()
                 if "response" in data:
                     return data["response"]
                 elif "error" in data:
-                    return {"error": data["error"]}
+                    raise Exception(f"VK API error: {data['error']}")
                 else:
-                    return {"error": {"error_msg": "Unknown error occurred during video.add"}}
+                    raise Exception("Unknown error occurred during VK post")
     except Exception as e:
-        logging.error(f"Ошибка при добавлении видео в VK: {e}")
+        print(f"Ошибка при публикации видео в VK: {e}")
         return {"error": str(e)}
 
 # Обработка нажатий кнопок
@@ -821,7 +787,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id = query.message.chat_id
 
         if data.startswith("post_"):
-            # Обработка сохранения видео
+            # Обработка публикации видео
             user_token = get_admin_token(chat_id)
             if not user_token:
                 await query.message.edit_text(
@@ -838,8 +804,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             video_path = context.user_data["video_path"]
             group_token = group[1]  # Токен группы
-            group_id_str = group[0]  # ID группы с минусом, например, "-12345"
-            group_id = int(group_id_str)  # Преобразуем в целое число, например, -12345
+            group_id = int(group[0][1:])  # ID группы без минуса
 
             try:
                 # Получаем URL для загрузки видео
@@ -853,39 +818,27 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 # Загружаем видео на сервер ВКонтакте
                 with open(video_path, "rb") as video_file:
-                    files = {"file": video_file}
                     upload_result = requests.post(
-                        upload_info["upload_url"], files=files
+                        upload_info["upload_url"], files={"video_file": video_file}
                     )
 
                 if upload_result.status_code == 200:
                     upload_data = upload_result.json()
 
-                    video_id = upload_data.get("video_id")
-                    owner_id = upload_data.get("owner_id")
-
-                    if not video_id or not owner_id:
-                        await query.message.edit_text(
-                            "❌ Не удалось получить video_id или owner_id после загрузки."
-                        )
-                        return
-
-                    # Сохраняем видео в группе без публикации на стене
-                    save_result = await post_video(
+                    # Публикуем видео в группе
+                    post_result = await post_video(
                         user_token,
-                        group_id,  # group_id уже содержит минус
-                        video_id,
-                        owner_id,
+                        group_id,
+                        upload_data["video_id"],
+                        upload_data["owner_id"],
                     )
-
-                    if "error" in save_result:
-                        error_msg = save_result["error"].get("error_msg", "Unknown error")
+                    if "error" in post_result:
                         await query.message.edit_text(
-                            f'❌ Ошибка при сохранении видео в группе "{group[2]}": {error_msg}'
+                            f'✅ Видео успешно опубликовано в группе "{group[2]}"!'
                         )
                     else:
                         await query.message.edit_text(
-                            f'✅ Видео успешно сохранено в группе "{group[2]}"!'
+                            f'✅ Видео успешно опубликовано в группе "{group[2]}"!'
                         )
 
                     # Удаляем видео из локальной папки
@@ -909,7 +862,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
 
             except Exception as e:
-                await query.message.edit_text(f"❌ Ошибка при сохранении видео: {str(e)}")
+                await query.message.edit_text(f"❌ Ошибка при публикации: {str(e)}")
 
         elif data.startswith("tariff_"):
             # Обработка выбора тарифа
@@ -949,11 +902,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
     except telegram.error.BadRequest as e:
-        logging.error(f"Error in button_callback: {e}")
+        print(f"Error in button_callback: {e}")
     except KeyError as e:
-        logging.error(f"Error in button_callback: '{e}'")
+        print(f"Error in button_callback: '{e}'")
     except Exception as e:
-        logging.error(f"Error in button_callback: {e}")
+        print(f"Error in button_callback: {e}")
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await start(update, context)  # Вызов функции start
