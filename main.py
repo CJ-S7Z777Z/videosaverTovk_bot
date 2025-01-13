@@ -764,7 +764,7 @@ async def get_upload_url(user_token, group_id):
 
 async def post_video_as_clip(user_token, group_id, video_id, owner_id):
     """
-    Функция для публикации видео как клипа в группе ВКонтакте.
+    Функция для публикации видео как клипа на стену группы ВКонтакте.
     """
     ssl_context = ssl.create_default_context()
     ssl_context.check_hostname = False
@@ -774,22 +774,22 @@ async def post_video_as_clip(user_token, group_id, video_id, owner_id):
         async with aiohttp.ClientSession(
             connector=aiohttp.TCPConnector(ssl=ssl_context)
         ) as session:
-            # Используем метод video.add для добавления видео как клипа
+            # Используем метод wall.post для публикации видео как клипа
             params = {
                 "access_token": user_token,
                 "owner_id": -group_id,  # Отрицательный ID группы
-                "video_id": video_id,
+                "attachments": f"video{owner_id}_{video_id}",
                 "v": "5.131",
             }
             async with session.post(
-                "https://api.vk.com/method/video.add",
+                "https://api.vk.com/method/wall.post",
                 params=params
             ) as resp:
                 try:
                     data = await resp.json()
-                    logger.info(f"Получен ответ от video.add: {data}")
+                    logger.info(f"Получен ответ от wall.post: {data}")
                 except Exception as e:
-                    logger.error(f"Ошибка при разборе JSON ответа video.add: {e}")
+                    logger.error(f"Ошибка при разборе JSON ответа wall.post: {e}")
                     return {"error": {"error_msg": "Invalid JSON response from VK API"}}
 
                 if isinstance(data, dict):
@@ -797,8 +797,8 @@ async def post_video_as_clip(user_token, group_id, video_id, owner_id):
                         return data["response"]
                     elif "error" in data:
                         return {"error": data["error"]}
-        # В случае отсутствия правильного ответа
-        return {"error": {"error_msg": "Unknown error occurred"}}
+                # Если ответ не соответствует ожидаемым форматам
+                return {"error": {"error_msg": "Unknown error occurred"}}
     except Exception as e:
         logger.error(f"Ошибка при публикации клипа в VK: {e}")
         return {"error": str(e)}
@@ -889,7 +889,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 video_id = upload_data["video_id"]
                 owner_id = upload_data["owner_id"]
 
-                # Публикуем видео как клип
+                # Публикуем видео как клип на стену группы
                 post_result = await post_video_as_clip(user_token, group_id, video_id, owner_id)
 
                 # Проверяем, что post_result является словарём
@@ -1001,6 +1001,8 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         await cancel(update, context)
     else:
         await handle_message(update, context)  # Обрабатываем как возможную ссылку на видео
+
+# Функции для работы с VK API уже определены выше
 
 def main():
     # Создаем базу данных при запуске
