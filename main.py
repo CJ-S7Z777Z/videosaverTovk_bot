@@ -32,6 +32,7 @@ import requests
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
+logger = logging.getLogger(__name__)
 
 # Главные администраторы (их ID прописаны в коде)
 ADMIN_CHAT_IDS = [1276928573, 332786197, 1786980999, 228845914]  # Замените на реальные ID главных админов
@@ -50,8 +51,8 @@ SELECTING_TARIFF = 6
 TARIFF_DETAILS = 7
 
 # Переменные окружения для ограничений скачиваний
-REGULAR_DAILY_LIMIT = int(os.getenv("REGULAR_DAILY_LIMIT"))
-ADMIN_DAILY_LIMIT = int(os.getenv("ADMIN_DAILY_LIMIT"))
+REGULAR_DAILY_LIMIT = int(os.getenv("REGULAR_DAILY_LIMIT"))  # Значение по умолчанию
+ADMIN_DAILY_LIMIT = int(os.getenv("ADMIN_DAILY_LIMIT"))    # Значение по умолчанию
 
 # Строка подключения к PostgreSQL
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -254,7 +255,7 @@ async def send_message_with_retry(
                 )
             else:
                 return await update.message.reply_text(text)
-        except (telegram.error.NetworkError, telegram.error.TimedOut) as e:
+        except (telegram.error.NetworkError, telegram.error.Timeout) as e:
             if attempt == max_retries - 1:
                 raise e
             await asyncio.sleep(1)
@@ -682,14 +683,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.user_data["user_token"] = user_token
 
                 # Устанавливаем таймер для удаления видео
-                DELETE_TIMEOUT = 90  # Время в секундах (например, 600 секунд = 10 минут)
+                DELETE_TIMEOUT = 90  # Время в секундах (например, 90 секунд)
 
                 async def delete_video_after_timeout(chat_id, video_path, timeout):
                     try:
                         await asyncio.sleep(timeout)
                         if os.path.exists(video_path):
                             os.remove(video_path)
-                            print(
+                            logger.info(
                                 f"Видео файл для chat_id {chat_id} удален после тайм-аута."
                             )
                             # Удаляем папку администратора, если она пуста
@@ -733,7 +734,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Функции для работы с VK API
 async def get_upload_url(user_token, group_id):
-
     ssl_context = ssl.create_default_context()
     ssl_context.check_hostname = False
     ssl_context.verify_mode = ssl.CERT_NONE
@@ -742,7 +742,7 @@ async def get_upload_url(user_token, group_id):
         connector=aiohttp.TCPConnector(ssl=ssl_context)
     ) as session:
         async with session.post(
-            f"https://api.vk.com/method/video.save?access_token={user_token}&group_id={group_id}&&v=5.131"
+            f"https://api.vk.com/method/video.save?access_token={user_token}&group_id={group_id}&v=5.131"
         ) as resp:
             data = await resp.json()
             if "response" in data:
@@ -755,7 +755,10 @@ async def get_upload_url(user_token, group_id):
             else:
                 return {"error": {"error_msg": "Unknown error occurred"}}
 
-async def post_video(user_token, group_id, video_id, owner_id):
+async def post_video_as_clip(user_token, group_id, video_id, owner_id):
+    """
+    Функция для публикации видео как клипа в группе ВКонтакте.
+    """
     ssl_context = ssl.create_default_context()
     ssl_context.check_hostname = False
     ssl_context.verify_mode = ssl.CERT_NONE
@@ -764,22 +767,29 @@ async def post_video(user_token, group_id, video_id, owner_id):
         async with aiohttp.ClientSession(
             connector=aiohttp.TCPConnector(ssl=ssl_context)
         ) as session:
+            # Используем метод video.add для добавления видео как клипа
+            params = {
+                "access_token": user_token,
+                "owner_id": -group_id,  # Отрицательный ID группы
+                "video_id": video_id,
+                "v": "5.131",
+            }
             async with session.post(
-                f"https://api.vk.com/method/wall.post?access_token={user_token}&owner_id={-group_id}&from_group=1&attachments=video{owner_id}_{video_id}&v=5.131"
+                "https://api.vk.com/method/video.add",
+                params=params
             ) as resp:
                 data = await resp.json()
                 if "response" in data:
                     return data["response"]
                 elif "error" in data:
-                    raise Exception(f"VK API error: {data['error']}")
+                    return {"error": data["error"]}
                 else:
-                    raise Exception("Unknown error occurred during VK post")
+                    return {"error": {"error_msg": "Unknown error occurred"}}
     except Exception as e:
-        print(f"Ошибка при публикации видео в VK: {e}")
+        logger.error(f"Ошибка при публикации клипа в VK: {e}")
         return {"error": str(e)}
 
 # Обработка нажатий кнопок
-
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         query = update.callback_query
@@ -803,7 +813,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             group = groups[group_index]
 
-            video_path = context.user_data["video_path"]
+            video_path = context.user_data.get("video_path")
+            if not video_path or not os.path.exists(video_path):
+                await query.message.edit_text("❌ Видео файл не найден.")
+                return
+
             group_token = group[1]  # Токен группы
             group_id = int(group[0][1:])  # ID группы без минуса
 
@@ -823,87 +837,86 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         upload_info["upload_url"], files={"video_file": video_file}
                     )
 
-                if upload_result.status_code == 200:
-                    try:
-                        upload_data = upload_result.json()
-                    except ValueError:
-                        await query.message.edit_text(
-                            "❌ Ошибка при загрузке видео: неверный формат ответа от сервера."
-                        )
-                        return
-
-                    # Проверяем, что upload_data является словарем и содержит необходимые ключи
-                    if not isinstance(upload_data, dict):
-                        await query.message.edit_text(
-                            f"❌ Ошибка при загрузке видео: ожидался JSON объект, получено {type(upload_data).__name__}."
-                        )
-                        return
-
-                    if "video_id" not in upload_data or "owner_id" not in upload_data:
-                        await query.message.edit_text(
-                            f"❌ Ошибка при загрузке видео: отсутствуют необходимые данные. Получен ответ: {upload_data}"
-                        )
-                        return
-
-                    video_id = upload_data["video_id"]
-                    owner_id = upload_data["owner_id"]
-
-                    # Публикуем видео в группе
-                    post_result = await post_video(
-                        user_token,
-                        group_id,
-                        video_id,
-                        owner_id,
-                    )
-
-                    if "error" in post_result:
-                        await query.message.edit_text(
-                            f'❌ Ошибка при публикации в группе "{group[2]}": {post_result["error"]["error_msg"]}'
-                        )
-                    else:
-                        await query.message.edit_text(
-                            f'✅ Видео успешно опубликовано в группе "{group[2]}"!'
-                        )
-
-                    # Удаляем видео из локальной папки
-                    if os.path.exists(video_path):
-                        os.remove(video_path)
-                        # Удаляем папку администратора, если она пуста
-                        admin_video_dir = os.path.dirname(video_path)
-                        try:
-                            os.rmdir(admin_video_dir)
-                        except OSError:
-                            pass  # Папка не пуста
-
-                    # Отменяем задачу удаления видео по таймеру
-                    if "delete_task" in context.user_data:
-                        delete_task = context.user_data["delete_task"]
-                        delete_task.cancel()
-
-                else:
+                if upload_result.status_code != 200:
                     await query.message.edit_text(
                         f"❌ Ошибка при загрузке видео: HTTP {upload_result.status_code} - {upload_result.text}"
+                    )
+                    return
+
+                try:
+                    upload_data = upload_result.json()
+                    logger.info(f"Upload data: {upload_data}")
+                except ValueError:
+                    await query.message.edit_text(
+                        "❌ Ошибка при загрузке видео: неверный формат ответа от сервера."
+                    )
+                    return
+
+                # Проверяем, что upload_data является словарем и содержит необходимые ключи
+                if not isinstance(upload_data, dict):
+                    await query.message.edit_text(
+                        f"❌ Ошибка при загрузке видео: ожидался JSON объект, получено {type(upload_data).__name__}."
+                    )
+                    return
+
+                if "video_id" not in upload_data or "owner_id" not in upload_data:
+                    await query.message.edit_text(
+                        f"❌ Ошибка при загрузке видео: отсутствуют необходимые данные. Получен ответ: {upload_data}"
+                    )
+                    return
+
+                video_id = upload_data["video_id"]
+                owner_id = upload_data["owner_id"]
+
+                # Публикуем видео как клип
+                post_result = await post_video_as_clip(user_token, group_id, video_id, owner_id)
+
+                if "error" in post_result:
+                    await query.message.edit_text(
+                        f'❌ Ошибка при публикации клипа в группе "{group[2]}": {post_result["error"]["error_msg"]}'
+                    )
+                    return
+                else:
+                    await query.message.edit_text(
+                        f'✅ Видео успешно опубликовано в группе "{group[2]}" в разделе клипов!'
                     )
 
             except Exception as e:
                 await query.message.edit_text(f"❌ Ошибка при публикации: {str(e)}")
+            finally:
+                # Удаляем видео из локальной папки, независимо от результата
+                if video_path and os.path.exists(video_path):
+                    os.remove(video_path)
+                    # Удаляем папку администратора, если она пуста
+                    admin_video_dir = os.path.dirname(video_path)
+                    try:
+                        os.rmdir(admin_video_dir)
+                    except OSError:
+                        pass  # Папка не пуста
+                # Отменяем задачу удаления видео по таймеру, если она существует
+                if "delete_task" in context.user_data:
+                    delete_task = context.user_data["delete_task"]
+                    delete_task.cancel()
 
         elif data.startswith("tariff_"):
             # Обработка выбора тарифа
             tariff_index = int(data[len("tariff_"):])
-            tariff = tariffs[tariff_index]
-            # Показываем детали тарифа и кнопки 'Оплатить' и 'Назад'
-            message = (
-                f"Тариф: {tariff['name']}\nСтоимость: {tariff['cost']}\nКоличество видео: {tariff['videos']}"
-            )
-            keyboard = [
-                [
-                    InlineKeyboardButton("Оплатить", callback_data="pay"),
-                    InlineKeyboardButton("Назад", callback_data="back_to_tariffs"),
+            if 0 <= tariff_index < len(tariffs):
+                tariff = tariffs[tariff_index]
+                # Показываем детали тарифа и кнопки 'Оплатить' и 'Назад'
+                message = (
+                    f"Тариф: {tariff['name']}\nСтоимость: {tariff['cost']}\nКоличество видео: {tariff['videos']}"
+                )
+                keyboard = [
+                    [
+                        InlineKeyboardButton("Оплатить", callback_data="pay"),
+                        InlineKeyboardButton("Назад", callback_data="back_to_tariffs"),
+                    ]
                 ]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.message.edit_text(message, reply_markup=reply_markup)
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.message.edit_text(message, reply_markup=reply_markup)
+            else:
+                await query.message.edit_text("❌ Выбран неверный тариф.")
 
         elif data == "back_to_tariffs":
             # Возвращаемся к списку тарифов
@@ -923,15 +936,15 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         else:
             # Другие данные обратного вызова
-            pass
+            await query.answer()
+            logger.warning(f"Неизвестный callback_data: {data}")
 
     except telegram.error.BadRequest as e:
-        print(f"Error in button_callback: {e}")
+        logger.error(f"Error in button_callback: {e}")
     except KeyError as e:
-        print(f"Error in button_callback: '{e}'")
+        logger.error(f"Error in button_callback: '{e}'")
     except Exception as e:
-        print(f"Error in button_callback: {e}")
-
+        logger.error(f"Error in button_callback: {e}")
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await start(update, context)  # Вызов функции start
