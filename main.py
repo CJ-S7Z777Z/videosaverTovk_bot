@@ -1,16 +1,14 @@
 
-import sqlite3
-import yt_dlp
-import requests
 import os
+import psycopg2
+import yt_dlp
 import telegram
 import asyncio
 import ssl
 import vk_api
 import urllib.parse
-import boto3  # Добавлено для работы с Yandex Cloud
-import botocore.exceptions
 import logging
+from datetime import datetime
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -28,6 +26,7 @@ from telegram.ext import (
     CallbackQueryHandler,
 )
 import aiohttp
+import requests
 
 # Настройка логирования
 logging.basicConfig(
@@ -50,142 +49,198 @@ WAITING_GROUP_REMOVE_ID = 5
 SELECTING_TARIFF = 6
 TARIFF_DETAILS = 7
 
-# Данные для подключения к Yandex Cloud
-AWS_ACCESS_KEY_ID = "YCAJE4t3j8XcCLHEl79Vg0cFz"  # Замените на ваш Access Key ID
-AWS_SECRET_ACCESS_KEY = "YCOTRa_l6J4ANGdAbMSOtgy8lwEkYhKBqlHxPjs7"  # Замените на ваш Secret Access Key
+# Переменные окружения для ограничений скачиваний
+REGULAR_DAILY_LIMIT = int(os.getenv("REGULAR_DAILY_LIMIT"))
+ADMIN_DAILY_LIMIT = int(os.getenv("ADMIN_DAILY_LIMIT"))
 
-# Имя бакета и ключ для файла базы данных
-BUCKET_NAME = "class-13"  # Замените на имя вашего бакета
-DB_FILE_KEY = "vk_groups.db"  # Имя файла базы данных в бакете
+# Строка подключения к PostgreSQL
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-# Настройка клиента S3 для Yandex Cloud
-s3_client = boto3.client(
-    "s3",
-    aws_access_key_id=AWS_ACCESS_KEY_ID,
-    aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-    endpoint_url="https://storage.yandexcloud.net",
-)
+# Токен бота
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# Функция для загрузки базы данных из бакета Yandex Cloud
-def download_db():
-    try:
-        s3_client.download_file(BUCKET_NAME, DB_FILE_KEY, "vk_groups.db")
-    except botocore.exceptions.ClientError as e:
-        if e.response["Error"]["Code"] == "404":
-            print("Файл базы данных не найден в бакете, будет создан новый.")
-        else:
-            print(f"Ошибка при загрузке базы данных: {e}")
-            raise
-
-# Функция для загрузки базы данных в бакет Yandex Cloud
-def upload_db():
-    try:
-        s3_client.upload_file("vk_groups.db", BUCKET_NAME, DB_FILE_KEY)
-    except Exception as e:
-        print(f"Ошибка при загрузке базы данных: {e}")
-
-# Менеджер контекста для операций с базой данных
-class DatabaseManager:
-    def __enter__(self):
-        download_db()
-        self.conn = sqlite3.connect("vk_groups.db")
-        return self.conn
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        self.conn.commit()
-        self.conn.close()
-        upload_db()
+# Функция для получения подключения к базе данных
+def get_db_connection():
+    return psycopg2.connect(DATABASE_URL)
 
 # Создание базы данных
 def setup_database():
-    with DatabaseManager() as conn:
-        c = conn.cursor()
-        c.execute(
-            """
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
         CREATE TABLE IF NOT EXISTS admins
-        (chat_id INTEGER PRIMARY KEY, user_token TEXT)
-        """
+        (
+            chat_id BIGINT PRIMARY KEY,
+            user_token TEXT
         )
-        c.execute(
-            """
+        """
+    )
+    c.execute(
+        """
         CREATE TABLE IF NOT EXISTS groups
-        (group_id TEXT, token TEXT, name TEXT, admin_chat_id INTEGER)
-        """
+        (
+            group_id TEXT PRIMARY KEY,
+            token TEXT,
+            name TEXT,
+            admin_chat_id BIGINT
         )
-        conn.commit()
+        """
+    )
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS video_downloads
+        (
+            user_id BIGINT,
+            date DATE,
+            count INTEGER,
+            PRIMARY KEY (user_id, date)
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
 
-# Остальные функции работы с базой данных
+# Функции работы с администраторами
 def get_admin_token(chat_id):
-    with DatabaseManager() as conn:
-        c = conn.cursor()
-        c.execute("SELECT user_token FROM admins WHERE chat_id=?", (chat_id,))
-        result = c.fetchone()
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT user_token FROM admins WHERE chat_id=%s", (chat_id,))
+    result = c.fetchone()
+    conn.close()
     if result:
         return result[0]
     else:
         return None
 
 def update_admin_token(chat_id, user_token):
-    with DatabaseManager() as conn:
-        c = conn.cursor()
-        c.execute(
-            "INSERT OR REPLACE INTO admins (chat_id, user_token) VALUES (?, ?)",
-            (chat_id, user_token),
-        )
-        conn.commit()
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        INSERT INTO admins (chat_id, user_token)
+        VALUES (%s, %s)
+        ON CONFLICT (chat_id) DO UPDATE SET user_token = EXCLUDED.user_token
+        """,
+        (chat_id, user_token),
+    )
+    conn.commit()
+    conn.close()
 
 def is_admin(chat_id):
-    with DatabaseManager() as conn:
-        c = conn.cursor()
-        c.execute("SELECT * FROM admins WHERE chat_id=?", (chat_id,))
-        result = c.fetchone()
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT * FROM admins WHERE chat_id=%s", (chat_id,))
+    result = c.fetchone()
+    conn.close()
     return result is not None
 
 def add_admin_to_db(chat_id):
-    with DatabaseManager() as conn:
-        c = conn.cursor()
-        c.execute("INSERT OR IGNORE INTO admins (chat_id) VALUES (?)", (chat_id,))
-        conn.commit()
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO admins (chat_id) VALUES (%s) ON CONFLICT DO NOTHING",
+        (chat_id,),
+    )
+    conn.commit()
+    conn.close()
 
 def remove_admin_from_db(chat_id):
-    with DatabaseManager() as conn:
-        c = conn.cursor()
-        c.execute("DELETE FROM admins WHERE chat_id=?", (chat_id,))
-        conn.commit()
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("DELETE FROM admins WHERE chat_id=%s", (chat_id,))
+    conn.commit()
+    conn.close()
 
 def get_admins():
-    with DatabaseManager() as conn:
-        c = conn.cursor()
-        c.execute("SELECT chat_id FROM admins")
-        admins = c.fetchall()
-    return admins
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT chat_id FROM admins")
+    admins = c.fetchall()
+    conn.close()
+    return [admin[0] for admin in admins]
 
+# Функции работы с группами
 def add_group_to_db(group_id, token, name, admin_chat_id):
-    with DatabaseManager() as conn:
-        c = conn.cursor()
-        c.execute(
-            "INSERT INTO groups VALUES (?, ?, ?, ?)",
-            (group_id, token, name, admin_chat_id),
-        )
-        conn.commit()
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        INSERT INTO groups (group_id, token, name, admin_chat_id)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (group_id) DO UPDATE SET token = EXCLUDED.token, name = EXCLUDED.name, admin_chat_id = EXCLUDED.admin_chat_id
+        """,
+        (group_id, token, name, admin_chat_id),
+    )
+    conn.commit()
+    conn.close()
 
 def get_groups(admin_chat_id):
-    with DatabaseManager() as conn:
-        c = conn.cursor()
-        c.execute(
-            "SELECT * FROM groups WHERE admin_chat_id=?", (admin_chat_id,)
-        )
-        groups = c.fetchall()
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT * FROM groups WHERE admin_chat_id=%s", (admin_chat_id,)
+    )
+    groups = c.fetchall()
+    conn.close()
     return groups
 
 def remove_group_from_db(group_id, admin_chat_id):
-    with DatabaseManager() as conn:
-        c = conn.cursor()
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        "DELETE FROM groups WHERE group_id=%s AND admin_chat_id=%s",
+        (group_id, admin_chat_id),
+    )
+    conn.commit()
+    conn.close()
+
+# Функции для отслеживания скачиваний видео
+def get_daily_download_count(user_id):
+    conn = get_db_connection()
+    c = conn.cursor()
+    today = datetime.utcnow().date()
+    c.execute(
+        "SELECT count FROM video_downloads WHERE user_id=%s AND date=%s",
+        (user_id, today),
+    )
+    result = c.fetchone()
+    conn.close()
+    if result:
+        return result[0]
+    else:
+        return 0
+
+def increment_daily_download_count(user_id):
+    conn = get_db_connection()
+    c = conn.cursor()
+    today = datetime.utcnow().date()
+    current_count = get_daily_download_count(user_id)
+    if current_count == 0:
         c.execute(
-            "DELETE FROM groups WHERE group_id=? AND admin_chat_id=?",
-            (group_id, admin_chat_id),
+            """
+            INSERT INTO video_downloads (user_id, date, count)
+            VALUES (%s, %s, %s)
+            """,
+            (user_id, today, 1),
         )
-        conn.commit()
+    else:
+        c.execute(
+            """
+            UPDATE video_downloads
+            SET count = count + 1
+            WHERE user_id=%s AND date=%s
+            """,
+            (user_id, today),
+        )
+    conn.commit()
+    conn.close()
+
+def get_download_limit(chat_id):
+    if chat_id in ADMIN_CHAT_IDS or is_admin(chat_id):
+        return ADMIN_DAILY_LIMIT
+    else:
+        return REGULAR_DAILY_LIMIT
 
 # Функция для повторных попыток отправки сообщения
 async def send_message_with_retry(
@@ -225,7 +280,7 @@ tariffs = [
 
 # Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.message.chat_id
+    chat_id = update.effective_chat.id
     # Проверяем, является ли пользователь администратором
     if chat_id in ADMIN_CHAT_IDS or is_admin(chat_id):
         # Проверяем, есть ли у администратора user_token
@@ -273,7 +328,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Обработка ссылки авторизации
 async def handle_authorization(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.message.chat_id
+    chat_id = update.effective_chat.id
     url = update.message.text.strip()
     # Извлекаем access_token из ссылки
     access_token = extract_access_token_from_url(url)
@@ -296,7 +351,7 @@ async def handle_authorization(update: Update, context: ContextTypes.DEFAULT_TYP
 
 # Команда 'Добавить группу'
 async def add_group_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.message.chat_id
+    chat_id = update.effective_chat.id
     if chat_id in ADMIN_CHAT_IDS or is_admin(chat_id):
         reply_markup = ReplyKeyboardMarkup(
             [[KeyboardButton("Отмена")]], resize_keyboard=True, one_time_keyboard=True
@@ -326,7 +381,7 @@ async def group_token_received(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def group_id_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-    chat_id = update.message.chat_id
+    chat_id = update.effective_chat.id
     group_id = f"-{text}"
     group_token = context.user_data["group_token"]
 
@@ -350,7 +405,7 @@ async def group_id_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Команда 'Мои группы'
 async def show_groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.message.chat_id
+    chat_id = update.effective_chat.id
     if chat_id in ADMIN_CHAT_IDS or is_admin(chat_id):
         groups = get_groups(chat_id)
         if not groups:
@@ -369,7 +424,7 @@ async def show_groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Команда 'Добавить администратора'
 async def add_admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.message.chat_id
+    chat_id = update.effective_chat.id
     if chat_id in ADMIN_CHAT_IDS:
         reply_markup = ReplyKeyboardMarkup(
             [[KeyboardButton("Отмена")]], resize_keyboard=True, one_time_keyboard=True
@@ -411,7 +466,7 @@ async def add_admin_id_received(update: Update, context: ContextTypes.DEFAULT_TY
 
 # Команда 'Удалить администратора'
 async def remove_admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.message.chat_id
+    chat_id = update.effective_chat.id
     if chat_id in ADMIN_CHAT_IDS:
         admins = get_admins()
         if not admins:
@@ -420,7 +475,7 @@ async def remove_admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         message = "Добавленные администраторы:\n\n"
         for i, admin in enumerate(admins, 1):
-            message += f"{i}. ID: {admin[0]}\n"
+            message += f"{i}. ID: {admin}\n"
 
         reply_markup = ReplyKeyboardMarkup(
             [[KeyboardButton("Отмена")]], resize_keyboard=True, one_time_keyboard=True
@@ -463,7 +518,7 @@ async def remove_admin_id_received(update: Update, context: ContextTypes.DEFAULT
 
 # Команда 'Удалить группу'
 async def remove_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.message.chat_id
+    chat_id = update.effective_chat.id
     if chat_id in ADMIN_CHAT_IDS or is_admin(chat_id):
         groups = get_groups(chat_id)
         if not groups:
@@ -503,7 +558,7 @@ async def group_remove_id_received(update: Update, context: ContextTypes.DEFAULT
         groups = context.user_data.get("groups", [])
         if 0 <= group_index < len(groups):
             group_id = groups[group_index][0]
-            remove_group_from_db(group_id, update.message.chat_id)
+            remove_group_from_db(group_id, update.effective_chat.id)
             await send_message_with_retry(
                 update,
                 f"✅ Группа {groups[group_index][2]} (ID: {group_id}) удалена!",
@@ -521,7 +576,7 @@ async def group_remove_id_received(update: Update, context: ContextTypes.DEFAULT
 
 # Команда 'Администраторы'
 async def show_admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.message.chat_id
+    chat_id = update.effective_chat.id
     if chat_id in ADMIN_CHAT_IDS:
         admins = get_admins()
         if not admins:
@@ -530,7 +585,7 @@ async def show_admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         message = "Добавленные администраторы:\n\n"
         for i, admin in enumerate(admins, 1):
-            message += f"{i}. ID: {admin[0]}\n"
+            message += f"{i}. ID: {admin}\n"
 
         await send_message_with_retry(update, message)
     else:
@@ -540,7 +595,8 @@ async def show_admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Обработка сообщений с ссылками на видео
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.message.chat_id
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
     if chat_id in ADMIN_CHAT_IDS or is_admin(chat_id):
         user_token = get_admin_token(chat_id)
         if not user_token:
@@ -564,6 +620,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             domain in url
             for domain in ["tiktok.com", "youtube.com", "youtu.be", "vk.com", "instagram.com"]
         ):
+            # Проверяем лимит скачиваний
+            download_limit = get_download_limit(chat_id)
+            current_count = get_daily_download_count(user_id)
+            if current_count >= download_limit:
+                await send_message_with_retry(
+                    update,
+                    f"❌ Вы достигли ежедневного лимита скачиваний ({download_limit} видео). Попробуйте завтра.",
+                )
+                return
+
             # Отправляем сообщение "Идет загрузка..."
             loading_message = await send_message_with_retry(update, "Идет загрузка...")
             try:
@@ -640,6 +706,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     delete_video_after_timeout(chat_id, video_file, DELETE_TIMEOUT)
                 )
                 context.user_data["delete_task"] = delete_task
+
+                # Увеличиваем счетчик скачиваний
+                increment_daily_download_count(user_id)
 
             except Exception as e:
                 await send_message_with_retry(
@@ -797,7 +866,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif data.startswith("tariff_"):
             # Обработка выбора тарифа
-            tariff_index = int(data[len("tariff_") :])
+            tariff_index = int(data[len("tariff_"):])
             tariff = tariffs[tariff_index]
             # Показываем детали тарифа и кнопки 'Оплатить' и 'Назад'
             message = (
@@ -845,7 +914,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Обработка текстовых сообщений (кнопок)
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.message.chat_id
+    chat_id = update.effective_chat.id
     text = update.message.text.strip()
     if text == "Добавить группу":
         return await add_group_start(update, context)
@@ -871,9 +940,9 @@ def main():
     # Настройка бота
     application = (
         ApplicationBuilder()
-        .token("7846138041:AAEu94LKLIr2D16xTGwN0emEczOHub2CP6I")
+        .token(BOT_TOKEN)
         .build()
-    )  # Замените на токен вашего бота
+    )
 
     # Добавление обработчиков
     conv_handler = ConversationHandler(
