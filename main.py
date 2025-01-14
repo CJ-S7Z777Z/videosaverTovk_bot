@@ -261,7 +261,7 @@ async def send_message_with_retry(
 
 # Генерация ссылки для авторизации VK
 def get_vk_auth_url():
-    SCOPE = "video, wall, groups, offline"
+    SCOPE = "video,wall,groups,offline"
     return f"https://oauth.vk.com/authorize?client_id={VK_CLIENT_ID}&display=page&redirect_uri=https://oauth.vk.com/blank.html&scope={SCOPE}&response_type=token&v=5.199"
 
 # Извлечение access_token из ссылки
