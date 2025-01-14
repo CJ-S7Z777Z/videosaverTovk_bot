@@ -32,10 +32,9 @@ import requests
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
-logger = logging.getLogger(__name__)
 
-# Главные администраторы (их Telegram user_id)
-ADMIN_USER_IDS = [1276928573, 332786197, 1786980999, 228845914]  # Замените на реальные user_id главных админов
+# Главные администраторы (их ID прописаны в коде)
+ADMIN_CHAT_IDS = [1276928573, 332786197, 1786980999, 228845914]  # Замените на реальные ID главных админов
 
 # VK App ID (замените на свой)
 VK_CLIENT_ID = "52875762"  # Укажите здесь ваш ID приложения VK
@@ -51,8 +50,8 @@ SELECTING_TARIFF = 6
 TARIFF_DETAILS = 7
 
 # Переменные окружения для ограничений скачиваний
-REGULAR_DAILY_LIMIT = int(os.getenv("REGULAR_DAILY_LIMIT", 500))  # Значение по умолчанию
-ADMIN_DAILY_LIMIT = int(os.getenv("ADMIN_DAILY_LIMIT", 1000))    # Значение по умолчанию
+REGULAR_DAILY_LIMIT = int(os.getenv("REGULAR_DAILY_LIMIT"))
+ADMIN_DAILY_LIMIT = int(os.getenv("ADMIN_DAILY_LIMIT"))
 
 # Строка подключения к PostgreSQL
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -72,7 +71,7 @@ def setup_database():
         """
         CREATE TABLE IF NOT EXISTS admins
         (
-            user_id BIGINT PRIMARY KEY,
+            chat_id BIGINT PRIMARY KEY,
             user_token TEXT
         )
         """
@@ -84,7 +83,7 @@ def setup_database():
             group_id TEXT PRIMARY KEY,
             token TEXT,
             name TEXT,
-            admin_user_id BIGINT
+            admin_chat_id BIGINT
         )
         """
     )
@@ -103,10 +102,10 @@ def setup_database():
     conn.close()
 
 # Функции работы с администраторами
-def get_admin_token(user_id):
+def get_admin_token(chat_id):
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT user_token FROM admins WHERE user_id=%s", (user_id,))
+    c.execute("SELECT user_token FROM admins WHERE chat_id=%s", (chat_id,))
     result = c.fetchone()
     conn.close()
     if result:
@@ -114,90 +113,87 @@ def get_admin_token(user_id):
     else:
         return None
 
-def update_admin_token(user_id, user_token):
+def update_admin_token(chat_id, user_token):
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
         """
-        INSERT INTO admins (user_id, user_token)
+        INSERT INTO admins (chat_id, user_token)
         VALUES (%s, %s)
-        ON CONFLICT (user_id) DO UPDATE SET user_token = EXCLUDED.user_token
+        ON CONFLICT (chat_id) DO UPDATE SET user_token = EXCLUDED.user_token
         """,
-        (user_id, user_token),
+        (chat_id, user_token),
     )
     conn.commit()
     conn.close()
 
-def is_admin(user_id):
+def is_admin(chat_id):
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT * FROM admins WHERE user_id=%s", (user_id,))
+    c.execute("SELECT * FROM admins WHERE chat_id=%s", (chat_id,))
     result = c.fetchone()
     conn.close()
     return result is not None
 
-def add_admin_to_db(user_id):
+def add_admin_to_db(chat_id):
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
-        "INSERT INTO admins (user_id) VALUES (%s) ON CONFLICT DO NOTHING",
-        (user_id,),
+        "INSERT INTO admins (chat_id) VALUES (%s) ON CONFLICT DO NOTHING",
+        (chat_id,),
     )
     conn.commit()
     conn.close()
 
-def remove_admin_from_db(user_id):
+def remove_admin_from_db(chat_id):
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("DELETE FROM admins WHERE user_id=%s", (user_id,))
+    c.execute("DELETE FROM admins WHERE chat_id=%s", (chat_id,))
     conn.commit()
     conn.close()
 
 def get_admins():
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT user_id FROM admins")
+    c.execute("SELECT chat_id FROM admins")
     admins = c.fetchall()
     conn.close()
     return [admin[0] for admin in admins]
 
 # Функции работы с группами
-def add_group_to_db(group_id, token, name, admin_user_id):
+def add_group_to_db(group_id, token, name, admin_chat_id):
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
         """
-        INSERT INTO groups (group_id, token, name, admin_user_id)
+        INSERT INTO groups (group_id, token, name, admin_chat_id)
         VALUES (%s, %s, %s, %s)
-        ON CONFLICT (group_id) DO UPDATE SET token = EXCLUDED.token, name = EXCLUDED.name, admin_user_id = EXCLUDED.admin_user_id
+        ON CONFLICT (group_id) DO UPDATE SET token = EXCLUDED.token, name = EXCLUDED.name, admin_chat_id = EXCLUDED.admin_chat_id
         """,
-        (group_id, token, name, admin_user_id),
+        (group_id, token, name, admin_chat_id),
     )
     conn.commit()
     conn.close()
-    logger.info(f"Группа {name} (ID: {group_id}) добавлена для пользователя {admin_user_id}.")
 
-def get_groups(admin_user_id):
+def get_groups(admin_chat_id):
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
-        "SELECT * FROM groups WHERE admin_user_id=%s", (admin_user_id,)
+        "SELECT * FROM groups WHERE admin_chat_id=%s", (admin_chat_id,)
     )
     groups = c.fetchall()
     conn.close()
-    logger.info(f"Получено {len(groups)} групп для пользователя {admin_user_id}.")
     return groups
 
-def remove_group_from_db(group_id, admin_user_id):
+def remove_group_from_db(group_id, admin_chat_id):
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
-        "DELETE FROM groups WHERE group_id=%s AND admin_user_id=%s",
-        (group_id, admin_user_id),
+        "DELETE FROM groups WHERE group_id=%s AND admin_chat_id=%s",
+        (group_id, admin_chat_id),
     )
     conn.commit()
     conn.close()
-    logger.info(f"Группа с ID {group_id} удалена для пользователя {admin_user_id}.")
 
 # Функции для отслеживания скачиваний видео
 def get_daily_download_count(user_id):
@@ -240,8 +236,8 @@ def increment_daily_download_count(user_id):
     conn.commit()
     conn.close()
 
-def get_download_limit(user_id):
-    if user_id in ADMIN_USER_IDS or is_admin(user_id):
+def get_download_limit(chat_id):
+    if chat_id in ADMIN_CHAT_IDS or is_admin(chat_id):
         return ADMIN_DAILY_LIMIT
     else:
         return REGULAR_DAILY_LIMIT
@@ -259,9 +255,7 @@ async def send_message_with_retry(
             else:
                 return await update.message.reply_text(text)
         except (telegram.error.NetworkError, telegram.error.TimedOut) as e:
-            logger.warning(f"Не удалось отправить сообщение. Попытка {attempt + 1}")
             if attempt == max_retries - 1:
-                logger.error(f"Не удалось отправить сообщение после {max_retries} попыток.")
                 raise e
             await asyncio.sleep(1)
 
@@ -286,11 +280,11 @@ tariffs = [
 
 # Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
     # Проверяем, является ли пользователь администратором
-    if user_id in ADMIN_USER_IDS or is_admin(user_id):
+    if chat_id in ADMIN_CHAT_IDS or is_admin(chat_id):
         # Проверяем, есть ли у администратора user_token
-        user_token = get_admin_token(user_id)
+        user_token = get_admin_token(chat_id)
         if not user_token:
             # Отправляем ссылку для авторизации
             auth_url = get_vk_auth_url()
@@ -306,7 +300,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [KeyboardButton("Добавить группу"), KeyboardButton("Мои группы")],
                 [KeyboardButton("Удалить группу")],
             ]
-            if user_id in ADMIN_USER_IDS:
+            if chat_id in ADMIN_CHAT_IDS:
                 keyboard.append(
                     [KeyboardButton("Добавить администратора"), KeyboardButton("Удалить администратора")]
                 )
@@ -334,16 +328,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Обработка ссылки авторизации
 async def handle_authorization(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
     url = update.message.text.strip()
     # Извлекаем access_token из ссылки
     access_token = extract_access_token_from_url(url)
     if access_token:
         # Добавляем администратора в базу данных, если его нет
-        if not is_admin(user_id):
-            add_admin_to_db(user_id)
+        if not is_admin(chat_id):
+            add_admin_to_db(chat_id)
         # Сохраняем access_token в базе данных
-        update_admin_token(user_id, access_token)
+        update_admin_token(chat_id, access_token)
         await send_message_with_retry(update, "✅ Вы успешно авторизовались!")
         # Отправляем главное меню
         await start(update, context)
@@ -357,8 +351,8 @@ async def handle_authorization(update: Update, context: ContextTypes.DEFAULT_TYP
 
 # Команда 'Добавить группу'
 async def add_group_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id in ADMIN_USER_IDS or is_admin(user_id):
+    chat_id = update.effective_chat.id
+    if chat_id in ADMIN_CHAT_IDS or is_admin(chat_id):
         reply_markup = ReplyKeyboardMarkup(
             [[KeyboardButton("Отмена")]], resize_keyboard=True, one_time_keyboard=True
         )
@@ -387,7 +381,7 @@ async def group_token_received(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def group_id_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
     group_id = f"-{text}"
     group_token = context.user_data["group_token"]
 
@@ -396,18 +390,14 @@ async def group_id_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
         vk = vk_session.get_api()
         group_info = vk.groups.getById(group_id=group_id[1:])[0]
 
-        add_group_to_db(group_id, group_token, group_info["name"], user_id)
+        add_group_to_db(group_id, group_token, group_info["name"], chat_id)
 
         await send_message_with_retry(
             update, f'✅ Группа "{group_info["name"]}" успешно добавлена!'
         )
-    except vk_api.exceptions.ApiError as e:
-        await send_message_with_retry(
-            update, f"❌ Ошибка при добавлении группы: {e}"
-        )
     except Exception as e:
         await send_message_with_retry(
-            update, f"❌ Неизвестная ошибка: {str(e)}"
+            update, f"❌ Ошибка при добавлении группы: {str(e)}"
         )
 
     await start(update, context)
@@ -415,9 +405,9 @@ async def group_id_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Команда 'Мои группы'
 async def show_groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id in ADMIN_USER_IDS or is_admin(user_id):
-        groups = get_groups(user_id)
+    chat_id = update.effective_chat.id
+    if chat_id in ADMIN_CHAT_IDS or is_admin(chat_id):
+        groups = get_groups(chat_id)
         if not groups:
             await send_message_with_retry(update, "Нет добавленных групп.")
             return
@@ -434,8 +424,8 @@ async def show_groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Команда 'Добавить администратора'
 async def add_admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id in ADMIN_USER_IDS:
+    chat_id = update.effective_chat.id
+    if chat_id in ADMIN_CHAT_IDS:
         reply_markup = ReplyKeyboardMarkup(
             [[KeyboardButton("Отмена")]], resize_keyboard=True, one_time_keyboard=True
         )
@@ -454,17 +444,17 @@ async def add_admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def add_admin_id_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     try:
-        new_admin_user_id = int(text)
-        if new_admin_user_id not in ADMIN_USER_IDS and not is_admin(new_admin_user_id):
-            add_admin_to_db(new_admin_user_id)
+        new_admin_chat_id = int(text)
+        if new_admin_chat_id not in ADMIN_CHAT_IDS and not is_admin(new_admin_chat_id):
+            add_admin_to_db(new_admin_chat_id)
             await send_message_with_retry(
                 update,
-                f"✅ Пользователь с ID {new_admin_user_id} добавлен в качестве администратора!",
+                f"✅ Пользователь с ID {new_admin_chat_id} добавлен в качестве администратора!",
             )
         else:
             await send_message_with_retry(
                 update,
-                f"❌ Пользователь с ID {new_admin_user_id} уже является администратором.",
+                f"❌ Пользователь с ID {new_admin_chat_id} уже является администратором.",
             )
     except ValueError:
         await send_message_with_retry(
@@ -476,8 +466,8 @@ async def add_admin_id_received(update: Update, context: ContextTypes.DEFAULT_TY
 
 # Команда 'Удалить администратора'
 async def remove_admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id in ADMIN_USER_IDS:
+    chat_id = update.effective_chat.id
+    if chat_id in ADMIN_CHAT_IDS:
         admins = get_admins()
         if not admins:
             await send_message_with_retry(update, "Нет добавленных администраторов.")
@@ -506,17 +496,17 @@ async def remove_admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def remove_admin_id_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     try:
-        admin_user_id = int(text)
-        if is_admin(admin_user_id):
-            remove_admin_from_db(admin_user_id)
+        admin_chat_id = int(text)
+        if is_admin(admin_chat_id):
+            remove_admin_from_db(admin_chat_id)
             await send_message_with_retry(
                 update,
-                f"✅ Пользователь с ID {admin_user_id} удален из списка администраторов!",
+                f"✅ Пользователь с ID {admin_chat_id} удален из списка администраторов!",
             )
         else:
             await send_message_with_retry(
                 update,
-                f"❌ Пользователь с ID {admin_user_id} не является администратором.",
+                f"❌ Пользователь с ID {admin_chat_id} не является администратором.",
             )
     except ValueError:
         await send_message_with_retry(
@@ -528,9 +518,9 @@ async def remove_admin_id_received(update: Update, context: ContextTypes.DEFAULT
 
 # Команда 'Удалить группу'
 async def remove_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id in ADMIN_USER_IDS or is_admin(user_id):
-        groups = get_groups(user_id)
+    chat_id = update.effective_chat.id
+    if chat_id in ADMIN_CHAT_IDS or is_admin(chat_id):
+        groups = get_groups(chat_id)
         if not groups:
             await send_message_with_retry(update, "Нет добавленных групп.")
             return ConversationHandler.END
@@ -568,7 +558,7 @@ async def group_remove_id_received(update: Update, context: ContextTypes.DEFAULT
         groups = context.user_data.get("groups", [])
         if 0 <= group_index < len(groups):
             group_id = groups[group_index][0]
-            remove_group_from_db(group_id, update.effective_user.id)
+            remove_group_from_db(group_id, update.effective_chat.id)
             await send_message_with_retry(
                 update,
                 f"✅ Группа {groups[group_index][2]} (ID: {group_id}) удалена!",
@@ -586,8 +576,8 @@ async def group_remove_id_received(update: Update, context: ContextTypes.DEFAULT
 
 # Команда 'Администраторы'
 async def show_admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id in ADMIN_USER_IDS:
+    chat_id = update.effective_chat.id
+    if chat_id in ADMIN_CHAT_IDS:
         admins = get_admins()
         if not admins:
             await send_message_with_retry(update, "Нет добавленных администраторов.")
@@ -603,219 +593,12 @@ async def show_admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
             update, "Команда доступна только для главных администраторов."
         )
 
-# Функции для работы с VK API
-async def get_upload_url(group_token, group_id):
-    ssl_context = ssl.create_default_context()
-    ssl_context.check_hostname = False
-    ssl_context.verify_mode = ssl.CERT_NONE
-
-    async with aiohttp.ClientSession(
-        connector=aiohttp.TCPConnector(ssl=ssl_context)
-    ) as session:
-        async with session.post(
-            f"https://api.vk.com/method/video.save?access_token={group_token}&group_id={group_id}&v=5.131"
-        ) as resp:
-            data = await resp.json()
-            if "response" in data:
-                if "upload_url" in data["response"]:
-                    return data["response"]
-                else:
-                    return {"error": {"error_msg": "Upload URL not found in response"}}
-            elif "error" in data:
-                return {"error": data["error"]}
-            else:
-                return {"error": {"error_msg": "Unknown error occurred"}}
-
-async def post_video(group_token, group_id, video_id, owner_id):
-    ssl_context = ssl.create_default_context()
-    ssl_context.check_hostname = False
-    ssl_context.verify_mode = ssl.CERT_NONE
-
-    try:
-        async with aiohttp.ClientSession(
-            connector=aiohttp.TCPConnector(ssl=ssl_context)
-        ) as session:
-            async with session.post(
-                f"https://api.vk.com/method/wall.post?access_token={group_token}&owner_id=-{group_id}&from_group=1&attachments=video{owner_id}_{video_id}&v=5.131"
-            ) as resp:
-                data = await resp.json()
-                if "response" in data:
-                    return data["response"]
-                elif "error" in data:
-                    raise Exception(f"VK API error: {data['error']['error_msg']}")
-                else:
-                    raise Exception("Unknown error occurred during VK post")
-    except Exception as e:
-        logger.error(f"Ошибка при публикации видео в VK: {e}")
-        return {"error": str(e)}
-
-# Обработка кнопок
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        query = update.callback_query
-        await query.answer()
-        data = query.data
-        user_id = update.effective_user.id
-
-        if data.startswith("post_"):
-            # Обработка публикации видео
-            group_index = int(data.split("_")[1])
-            groups = context.user_data.get("groups", [])
-            if not groups:
-                await query.message.edit_text("Нет добавленных групп.")
-                return
-
-            if group_index < 0 or group_index >= len(groups):
-                await query.message.edit_text("Неверный индекс группы.")
-                return
-
-            group = groups[group_index]
-            group_token = group[1]  # Токен группы
-            group_id = int(group[0][1:])  # ID группы без минуса
-
-            video_path = context.user_data.get("video_path")
-            if not video_path:
-                await query.message.edit_text("Видео не найдено.")
-                return
-
-            try:
-                # Получаем URL для загрузки видео
-                upload_info = await get_upload_url(group_token, group_id)
-
-                if "error" in upload_info:
-                    await query.message.edit_text(
-                        f'❌ Ошибка при получении URL для загрузки видео: {upload_info["error"]["error_msg"]}'
-                    )
-                    return
-
-                upload_url = upload_info["upload_url"]
-
-                # Загружаем видео на сервер ВКонтакте
-                with open(video_path, "rb") as video_file:
-                    upload_result = requests.post(
-                        upload_url, files={"video_file": video_file}
-                    )
-
-                if upload_result.status_code == 200:
-                    upload_data = upload_result.json()
-
-                    # Публикуем видео в группе
-                    post_result = await post_video(
-                        group_token,
-                        group_id,
-                        upload_data["video_id"],
-                        upload_data["owner_id"],
-                    )
-                    if "error" in post_result:
-                        await query.message.edit_text(
-                            f'❌ Ошибка при публикации видео: {post_result["error"]}'
-                        )
-                    else:
-                        await query.message.edit_text(
-                            f'✅ Видео успешно опубликовано в группе "{group[2]}"!'
-                        )
-
-                    # Удаляем видео из локальной папки
-                    if os.path.exists(video_path):
-                        os.remove(video_path)
-                        # Удаляем папку администратора, если она пуста
-                        admin_video_dir = os.path.dirname(video_path)
-                        try:
-                            os.rmdir(admin_video_dir)
-                        except OSError:
-                            pass  # Папка не пуста
-
-                    # Отменяем задачу удаления видео по таймеру
-                    if "delete_task" in context.user_data:
-                        delete_task = context.user_data["delete_task"]
-                        delete_task.cancel()
-
-                else:
-                    await query.message.edit_text(
-                        f"❌ Ошибка при загрузке видео: HTTP {upload_result.status_code} - {upload_result.text}"
-                    )
-
-            except Exception as e:
-                await query.message.edit_text(f"❌ Ошибка при публикации: {str(e)}")
-
-        elif data.startswith("tariff_"):
-            # Обработка выбора тарифа
-            tariff_index = int(data[len("tariff_"):])
-            if 0 <= tariff_index < len(tariffs):
-                tariff = tariffs[tariff_index]
-                # Показываем детали тарифа и кнопки 'Оплатить' и 'Назад'
-                message = (
-                    f"Тариф: {tariff['name']}\nСтоимость: {tariff['cost']}\nКоличество видео: {tariff['videos']}"
-                )
-                keyboard = [
-                    [
-                        InlineKeyboardButton("Оплатить", callback_data="pay"),
-                        InlineKeyboardButton("Назад", callback_data="back_to_tariffs"),
-                    ]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await query.message.edit_text(message, reply_markup=reply_markup)
-            else:
-                await query.message.edit_text("Неверный выбор тарифа.")
-
-        elif data == "back_to_tariffs":
-            # Возвращаемся к списку тарифов
-            keyboard = [
-                [InlineKeyboardButton(tariff["name"], callback_data=f"tariff_{i}")]
-                for i, tariff in enumerate(tariffs)
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.message.edit_text(
-                "Для доступа к боту необходимо купить тариф.",
-                reply_markup=reply_markup,
-            )
-
-        elif data == "pay":
-            # Ничего не делаем при нажатии 'Оплатить'
-            await query.answer("Оплата пока не реализована.")
-
-        else:
-            # Другие данные обратного вызова
-            pass
-
-    except telegram.error.BadRequest as e:
-        logger.error(f"Error in button_callback: {e}")
-    except KeyError as e:
-        logger.error(f"Error in button_callback: '{e}'")
-    except Exception as e:
-        logger.error(f"Error in button_callback: {e}")
-
-# Обработка отмены действия
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await start(update, context)  # Вызов функции start
-    return ConversationHandler.END  # Завершение текущего разговора
-
-# Обработка текстовых сообщений (кнопок)
-async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    text = update.message.text.strip()
-    if text == "Добавить группу":
-        return await add_group_start(update, context)
-    elif text == "Мои группы":
-        await show_groups(update, context)
-    elif text == "Удалить группу":
-        return await remove_group(update, context)
-    elif text == "Добавить администратора":
-        return await add_admin_start(update, context)
-    elif text == "Удалить администратора":
-        return await remove_admin_start(update, context)
-    elif text == "Администраторы":
-        await show_admins(update, context)
-    elif text == "Отмена":
-        await cancel(update, context)
-    else:
-        await handle_message(update, context)  # Обрабатываем как возможную ссылку на видео
-
 # Обработка сообщений с ссылками на видео
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
     user_id = update.effective_user.id
-    if user_id in ADMIN_USER_IDS or is_admin(user_id):
-        user_token = get_admin_token(user_id)
+    if chat_id in ADMIN_CHAT_IDS or is_admin(chat_id):
+        user_token = get_admin_token(chat_id)
         if not user_token:
             await send_message_with_retry(
                 update,
@@ -823,7 +606,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        groups = get_groups(user_id)
+        groups = get_groups(chat_id)
         if not groups:
             await send_message_with_retry(
                 update,
@@ -838,7 +621,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for domain in ["tiktok.com", "youtube.com", "youtu.be", "vk.com", "instagram.com"]
         ):
             # Проверяем лимит скачиваний
-            download_limit = get_download_limit(user_id)
+            download_limit = get_download_limit(chat_id)
             current_count = get_daily_download_count(user_id)
             if current_count >= download_limit:
                 await send_message_with_retry(
@@ -851,7 +634,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             loading_message = await send_message_with_retry(update, "Идет загрузка...")
             try:
                 # Создаем директорию для администратора
-                admin_video_dir = f"videos/{user_id}"
+                admin_video_dir = f"videos/{chat_id}"
                 if not os.path.exists(admin_video_dir):
                     os.makedirs(admin_video_dir)
 
@@ -871,13 +654,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await asyncio.sleep(1)
                 await loading_message.delete()
 
-                # Сохранение пути к видео и групп для дальнейшей обработки
-                context.user_data["video_path"] = video_file
-
-                # Увеличиваем счетчик скачиваний
-                increment_daily_download_count(user_id)
-
-                # Отправляем меню выбора группы для публикации
+                # Публикация видео в группы
                 keyboard = []
                 row = []
                 for i, group in enumerate(groups, 1):
@@ -892,22 +669,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 reply_markup = InlineKeyboardMarkup(keyboard)
 
+                # Отправляем сообщение с клавиатурой
                 await send_message_with_retry(
                     update,
                     "Выберите группу для публикации:",
                     reply_markup=reply_markup,
                 )
 
-                # Устанавливаем таймер для удаления видео
-                DELETE_TIMEOUT = 600  # Время в секундах (например, 600 секунд = 10 минут)
+                # Сохраняем видео и информацию о группах для обработки в button_callback
+                context.user_data["video_path"] = video_file
+                context.user_data["groups"] = groups
+                context.user_data["user_token"] = user_token
 
-                async def delete_video_after_timeout(user_id, video_path, timeout):
+                # Устанавливаем таймер для удаления видео
+                DELETE_TIMEOUT = 90  # Время в секундах (например, 600 секунд = 10 минут)
+
+                async def delete_video_after_timeout(chat_id, video_path, timeout):
                     try:
                         await asyncio.sleep(timeout)
                         if os.path.exists(video_path):
                             os.remove(video_path)
-                            logger.info(
-                                f"Видео файл для user_id {user_id} удален после тайм-аута."
+                            print(
+                                f"Видео файл для chat_id {chat_id} удален после тайм-аута."
                             )
                             # Удаляем папку администратора, если она пуста
                             admin_video_dir = os.path.dirname(video_path)
@@ -920,9 +703,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         pass
 
                 delete_task = asyncio.create_task(
-                    delete_video_after_timeout(user_id, video_file, DELETE_TIMEOUT)
+                    delete_video_after_timeout(chat_id, video_file, DELETE_TIMEOUT)
                 )
                 context.user_data["delete_task"] = delete_task
+
+                # Увеличиваем счетчик скачиваний
+                increment_daily_download_count(user_id)
 
             except Exception as e:
                 await send_message_with_retry(
@@ -946,7 +732,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 # Функции для работы с VK API
-async def get_upload_url(group_token, group_id):
+async def get_upload_url(user_token, group_id):
+
     ssl_context = ssl.create_default_context()
     ssl_context.check_hostname = False
     ssl_context.verify_mode = ssl.CERT_NONE
@@ -955,7 +742,7 @@ async def get_upload_url(group_token, group_id):
         connector=aiohttp.TCPConnector(ssl=ssl_context)
     ) as session:
         async with session.post(
-            f"https://api.vk.com/method/video.save?access_token={group_token}&group_id={group_id}&v=5.131"
+            f"https://api.vk.com/method/video.save?access_token={user_token}&group_id={group_id}&&v=5.131"
         ) as resp:
             data = await resp.json()
             if "response" in data:
@@ -968,7 +755,7 @@ async def get_upload_url(group_token, group_id):
             else:
                 return {"error": {"error_msg": "Unknown error occurred"}}
 
-async def post_video(group_token, group_id, video_id, owner_id):
+async def post_video(user_token, group_id, video_id, owner_id):
     ssl_context = ssl.create_default_context()
     ssl_context.check_hostname = False
     ssl_context.verify_mode = ssl.CERT_NONE
@@ -978,51 +765,50 @@ async def post_video(group_token, group_id, video_id, owner_id):
             connector=aiohttp.TCPConnector(ssl=ssl_context)
         ) as session:
             async with session.post(
-                f"https://api.vk.com/method/wall.post?access_token={group_token}&owner_id=-{group_id}&from_group=1&attachments=video{owner_id}_{video_id}&v=5.131"
+                f"https://api.vk.com/method/wall.post?access_token={user_token}&owner_id={-group_id}&from_group=1&attachments=video{owner_id}_{video_id}&v=5.131"
             ) as resp:
                 data = await resp.json()
                 if "response" in data:
                     return data["response"]
                 elif "error" in data:
-                    raise Exception(f"VK API error: {data['error']['error_msg']}")
+                    raise Exception(f"VK API error: {data['error']}")
                 else:
                     raise Exception("Unknown error occurred during VK post")
     except Exception as e:
-        logger.error(f"Ошибка при публикации видео в VK: {e}")
+        print(f"Ошибка при публикации видео в VK: {e}")
         return {"error": str(e)}
 
-# Обработка кнопок
+# Обработка нажатий кнопок
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         query = update.callback_query
         await query.answer()
         data = query.data
-        user_id = update.effective_user.id
+        chat_id = query.message.chat_id
 
         if data.startswith("post_"):
             # Обработка публикации видео
+            user_token = get_admin_token(chat_id)
+            if not user_token:
+                await query.message.edit_text(
+                    "Вы не авторизованы. Используйте команду /start, чтобы авторизоваться."
+                )
+                return
+
             group_index = int(data.split("_")[1])
             groups = context.user_data.get("groups", [])
             if not groups:
                 await query.message.edit_text("Нет добавленных групп.")
                 return
-
-            if group_index < 0 or group_index >= len(groups):
-                await query.message.edit_text("Неверный индекс группы.")
-                return
-
             group = groups[group_index]
+
+            video_path = context.user_data["video_path"]
             group_token = group[1]  # Токен группы
             group_id = int(group[0][1:])  # ID группы без минуса
 
-            video_path = context.user_data.get("video_path")
-            if not video_path:
-                await query.message.edit_text("Видео не найдено.")
-                return
-
             try:
                 # Получаем URL для загрузки видео
-                upload_info = await get_upload_url(group_token, group_id)
+                upload_info = await get_upload_url(user_token, group_id)
 
                 if "error" in upload_info:
                     await query.message.edit_text(
@@ -1030,12 +816,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     return
 
-                upload_url = upload_info["upload_url"]
-
                 # Загружаем видео на сервер ВКонтакте
                 with open(video_path, "rb") as video_file:
                     upload_result = requests.post(
-                        upload_url, files={"video_file": video_file}
+                        upload_info["upload_url"], files={"video_file": video_file}
                     )
 
                 if upload_result.status_code == 200:
@@ -1043,14 +827,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                     # Публикуем видео в группе
                     post_result = await post_video(
-                        group_token,
+                        user_token,
                         group_id,
                         upload_data["video_id"],
                         upload_data["owner_id"],
                     )
                     if "error" in post_result:
                         await query.message.edit_text(
-                            f'❌ Ошибка при публикации видео: {post_result["error"]}'
+                            f'✅ Видео успешно опубликовано в группе "{group[2]}"!'
                         )
                     else:
                         await query.message.edit_text(
@@ -1083,22 +867,19 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data.startswith("tariff_"):
             # Обработка выбора тарифа
             tariff_index = int(data[len("tariff_"):])
-            if 0 <= tariff_index < len(tariffs):
-                tariff = tariffs[tariff_index]
-                # Показываем детали тарифа и кнопки 'Оплатить' и 'Назад'
-                message = (
-                    f"Тариф: {tariff['name']}\nСтоимость: {tariff['cost']}\nКоличество видео: {tariff['videos']}"
-                )
-                keyboard = [
-                    [
-                        InlineKeyboardButton("Оплатить", callback_data="pay"),
-                        InlineKeyboardButton("Назад", callback_data="back_to_tariffs"),
-                    ]
+            tariff = tariffs[tariff_index]
+            # Показываем детали тарифа и кнопки 'Оплатить' и 'Назад'
+            message = (
+                f"Тариф: {tariff['name']}\nСтоимость: {tariff['cost']}\nКоличество видео: {tariff['videos']}"
+            )
+            keyboard = [
+                [
+                    InlineKeyboardButton("Оплатить", callback_data="pay"),
+                    InlineKeyboardButton("Назад", callback_data="back_to_tariffs"),
                 ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await query.message.edit_text(message, reply_markup=reply_markup)
-            else:
-                await query.message.edit_text("Неверный выбор тарифа.")
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.message.edit_text(message, reply_markup=reply_markup)
 
         elif data == "back_to_tariffs":
             # Возвращаемся к списку тарифов
@@ -1121,20 +902,19 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
     except telegram.error.BadRequest as e:
-        logger.error(f"Error in button_callback: {e}")
+        print(f"Error in button_callback: {e}")
     except KeyError as e:
-        logger.error(f"Error in button_callback: '{e}'")
+        print(f"Error in button_callback: '{e}'")
     except Exception as e:
-        logger.error(f"Error in button_callback: {e}")
+        print(f"Error in button_callback: {e}")
 
-# Обработка отмены действия
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await start(update, context)  # Вызов функции start
     return ConversationHandler.END  # Завершение текущего разговора
 
 # Обработка текстовых сообщений (кнопок)
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
     text = update.message.text.strip()
     if text == "Добавить группу":
         return await add_group_start(update, context)
