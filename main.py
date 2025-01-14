@@ -262,7 +262,7 @@ async def send_message_with_retry(
 # Генерация ссылки для авторизации VK
 def get_vk_auth_url():
     SCOPE = "video, wall, groups, offline"
-    return f"https://oauth.vk.com/authorize?client_id={VK_CLIENT_ID}&display=page&redirect_uri=https://oauth.vk.com/blank.html&scope={SCOPE}&response_type=token&v=5.131"
+    return f"https://oauth.vk.com/authorize?client_id={VK_CLIENT_ID}&display=page&redirect_uri=https://oauth.vk.com/blank.html&scope={SCOPE}&response_type=token&v=5.199"
 
 # Извлечение access_token из ссылки
 def extract_access_token_from_url(url):
@@ -742,7 +742,7 @@ async def get_upload_url(user_token, group_id):
         connector=aiohttp.TCPConnector(ssl=ssl_context)
     ) as session:
         async with session.post(
-            f"https://api.vk.com/method/video.save?access_token={user_token}&group_id={group_id}&&v=5.131"
+            f"https://api.vk.com/method/video.save?access_token={user_token}&group_id={group_id}&&v=5.199"
         ) as resp:
             data = await resp.json()
             if "response" in data:
@@ -765,7 +765,7 @@ async def post_video(user_token, group_id, video_id, owner_id):
             connector=aiohttp.TCPConnector(ssl=ssl_context)
         ) as session:
             async with session.post(
-                f"https://api.vk.com/method/wall.post?access_token={user_token}&owner_id={-group_id}&from_group=1&attachments=video{owner_id}_{video_id}&v=5.131"
+                f"https://api.vk.com/method/wall.post?access_token={user_token}&owner_id={-group_id}&from_group=1&attachments=video{owner_id}_{video_id}&v=5.199"
             ) as resp:
                 data = await resp.json()
                 if "response" in data:
