@@ -308,7 +308,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
             await send_message_with_retry(
                 update,
-                "Привет! Я помогу скачивать видео из TikTok, YouTube, VK клипы и публиковать видео в группы ВКонтакте.",
+                "Привет! Я помогу скачивать видео из TikTok, YouTube и VK клипы и публиковать видео в группы ВКонтакте.",
                 reply_markup=reply_markup,
             )
             return ConversationHandler.END
@@ -616,9 +616,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Проверяем, содержит ли сообщение ссылку на видео
         url = update.message.text.strip()
+        parsed_url = urllib.parse.urlparse(url)
+        netloc = parsed_url.netloc.lower()
+
         if any(
-            domain in url
-            for domain in ["tiktok.com", "youtube.com", "youtu.be", "vk.com", "instagram.com"]
+            domain in netloc
+            for domain in ["tiktok.com", "youtube.com", "youtu.be", "vk."]
         ):
             # Проверяем лимит скачиваний
             download_limit = get_download_limit(chat_id)
@@ -717,7 +720,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await send_message_with_retry(
                 update,
-                "Пожалуйста, отправьте ссылку на видео из TikTok, YouTube, VK или Instagram.",
+                "Пожалуйста, отправьте ссылку на видео из TikTok, YouTube или VK.",
             )
     else:
         keyboard = [
@@ -834,27 +837,27 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     if "error" in post_result:
                         await query.message.edit_text(
-                            f'✅ Видео успешно опубликовано в группе "{group[2]}"!'
+                            f'❌ Ошибка при публикации видео: {post_result["error"]}'
                         )
                     else:
                         await query.message.edit_text(
                             f'✅ Видео успешно опубликовано в группе "{group[2]}"!'
                         )
 
-                    # Удаляем видео из локальной папки
-                    if os.path.exists(video_path):
-                        os.remove(video_path)
-                        # Удаляем папку администратора, если она пуста
-                        admin_video_dir = os.path.dirname(video_path)
-                        try:
-                            os.rmdir(admin_video_dir)
-                        except OSError:
-                            pass  # Папка не пуста
+                        # Удаляем видео из локальной папки
+                        if os.path.exists(video_path):
+                            os.remove(video_path)
+                            # Удаляем папку администратора, если она пуста
+                            admin_video_dir = os.path.dirname(video_path)
+                            try:
+                                os.rmdir(admin_video_dir)
+                            except OSError:
+                                pass  # Папка не пуста
 
-                    # Отменяем задачу удаления видео по таймеру
-                    if "delete_task" in context.user_data:
-                        delete_task = context.user_data["delete_task"]
-                        delete_task.cancel()
+                        # Отменяем задачу удаления видео по таймеру
+                        if "delete_task" in context.user_data:
+                            delete_task = context.user_data["delete_task"]
+                            delete_task.cancel()
 
                 else:
                     await query.message.edit_text(
